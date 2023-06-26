@@ -46,6 +46,7 @@ def on_ui_tabs():
         with gr.Row():
             gr_late = gr.Number(
                 value = 0.0001,
+                step = 0.0001,
                 maximum = 1.0,
                 minimum = 0.0,
                 label="learning_late"
@@ -100,9 +101,9 @@ def gr_func(gr_text,gr_radio,gr_step,gr_layer,gr_late,gr_lstep,gr_name):
 
     # オプティマイザの選択
     if gr_radio == 'Adam':
-        optimizer = Adam([input_tensor], lr=gr_late)
+        optimizer = Adam([input_tensor_opt], lr=gr_late)
     else:
-        optimizer = Adam([input_tensor], lr=gr_late)
+        optimizer = Adam([input_tensor_opt], lr=gr_late)
     
     # 損失関数の定義
     loss_fn = MSELoss()
