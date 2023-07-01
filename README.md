@@ -1,5 +1,75 @@
 # embedding_estimate
 
+stable diffusion webui extension
+
+[日本語解説](#embedding_estimate_日本語)
+
+## Overview
+The process flow of the emphasis syntax () in webui is as follows: 
+
+1. Separate the token part from the emphasis part in () and input the token part to the encoder of the transformer in the CLIP model 3.
+
+3. get a vector from the obtained hidden_states layer and normalize it
+
+4. multiply it by the numerical value specified in the highlighting syntax for each token
+
+The process is as follows.
+
+So, in order to reproduce the vector values through the highlighting syntax with embedding, we need to
+
+1. prepare the target vector output
+
+2. input the embedding to be adjusted to the encoder
+
+3. calculate the loss value from the output of 2 and the target output and adjust
+
+This method was adopted.
+
+## Parameters
+
+When using this method, enter the following parameters and press "estimate!
+
+### steps
+
+The number of steps to be used in t2i,i2i. The number of steps used in t2i,i2i may be the same as the number of steps you normally use.
+
+### text
+
+Prompt used by t2i,i2i. Syntax should be the same as webui's (need to check if it works with other syntax than emphasized syntax).
+
+### layer
+
+The number of tokens to use for embedding.
+
+### late
+
+Learning rate.
+
+### optimizer
+
+Choice of learning adjustment method. Default is Adam.
+
+### loss
+
+Select the loss function. Default is MSELoss.
+
+### learning step
+
+Number of learning steps.
+
+### initial prompt
+
+Additional learning prompt.
+
+The prompt is only converted to embedding (embedding layer) before input to the encoder, so entering the emphasis syntax here will not be emphasized.
+
+### name
+
+The name under which the embedding will be saved. Can be overwritten by turning on the check button next to it.
+
+
+## embedding_estimate_日本語
+
 stable diffusion webui 拡張
 
 ## 概要
@@ -47,13 +117,23 @@ t2i,i2iで使うプロンプト。構文はwebuiのものがそのまま使え�
 
 学習調整手法の選択。デフォルトはAdam。
 
+### loss
+
+損失関数の選択。デフォルトはMSELoss。
+
 ### learning step
 
 学習ステップ数。
 
+### initial prompt
+
+追加学習用のプロンプト入力欄。
+
+プロンプトをencoderに入力する前のembedding(埋め込み層)に変換するだけなので、ここで強調構文を入力しても強調されません。
+
 ### name
 
-embeddingを保存する際の名前。強制上書き注意(要セーフティロック)。
+embeddingを保存する際の名前。隣のチェックボタンをONにすることで上書き保存可能。
 
 
 
