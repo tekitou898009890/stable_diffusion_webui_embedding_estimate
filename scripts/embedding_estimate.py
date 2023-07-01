@@ -46,14 +46,13 @@ def on_ui_tabs():
         with gr.Row():
             gr_late = gr.Number(
                 value = 0.0001,
-                step = 0.0001,
                 maximum = 1.0,
                 minimum = 0.0,
                 label="learning_late"
             )
         with gr.Row():
             gr_radio = gr.Radio(
-                choices=('Adam','Lion','By parts','By words','By tokens','By vectors'), 
+                choices=('Adam'), 
                 value='By parts', 
                 type='index', 
                 interactive=True, 
@@ -82,28 +81,34 @@ def on_ui_tabs():
                 interactive=True, 
                 label='save embedding name'
             )
+            gr_nameow = gr.Checkbox(
+                label='enable over write embedding'
+            ) 
         
         # gr_button.click(fn=gr_func, inputs=[gr_name,gr_text,gr_radio,gr_true], outputs=[gr_html,gr_name,gr_text], show_progress=False)
-        gr_button.click(fn=gr_func, inputs=[gr_text,gr_radio,gr_step,gr_layer,gr_late,gr_lstep,gr_name], show_progress=False)
+        gr_button.click(fn=gr_func, inputs=[gr_text,gr_radio,gr_step,gr_layer,gr_late,gr_lstep,gr_name,gr_nameow], show_progress=False)
 
     return [(ui_component, "Extension Template", "extension_template_tab")]
 
-def gr_func(gr_text,gr_radio,gr_step,gr_layer,gr_late,gr_lstep,gr_name):
+def gr_func(gr_text,gr_radio,gr_step,gr_layer,gr_late,gr_lstep,gr_name,gr_nameow):
 
     if gr_name is None:
         print("Please write save name")
         return ''
 
     # 入力データの初期化（Nx768次元の配列）
-    input_tensor = torch.randn(1, gr_layer, 768, requires_grad=True).squeeze(0).to(device=devices.device,dtype=torch.float16)  # 入力テンソルに勾配を追跡させる
+    input_tensor = torch.randn(1, gr_layer, 768, requires_grad=True)  # 入力テンソルに勾配を追跡させる
+
+    # .squeeze(0).to(device=devices.device,dtype=torch.float16)
+
     # input_tensor = torch.randn(1, gr_layer, 768).squeeze(0).to(device=devices.device,dtype=torch.float16)  # 入力テンソルに勾配を追跡させる
     input_tensor_opt = input_tensor.detach().requires_grad_(True)
 
     # オプティマイザの選択
     if gr_radio == 'Adam':
-        optimizer = Adam([input_tensor_opt], lr=gr_late)
+        optimizer = Adam([input_tensor], lr=gr_late)
     else:
-        optimizer = Adam([input_tensor_opt], lr=gr_late)
+        optimizer = Adam([input_tensor], lr=gr_late)
     
     # 損失関数の定義
     loss_fn = MSELoss()
@@ -111,11 +116,11 @@ def gr_func(gr_text,gr_radio,gr_step,gr_layer,gr_late,gr_lstep,gr_name):
     # 目的出力
     target_output = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step)
 
-    estimate_vector_value(input_tensor, target_output, loss_fn, optimizer, gr_lstep, gr_step,gr_name)
+    # estimate_vector_value(input_tensor, target_output, loss_fn, optimizer, gr_lstep, gr_step,gr_name)
 
-    print(f"{target_output[0][0].cond}")
+    # print(f"{input_tensor[0][0].cond}")
 
-def estimate_vector_value(input_tensor, target_output, loss_fn, optimizer, gr_lstep, gr_step, gr_name):
+# def estimate_vector_value(input_tensor, target_output, loss_fn, optimizer, gr_lstep, gr_step, gr_name):
     
     EMBEDDING_NAME = 'embedding_estimate'
     cache = {}
@@ -126,7 +131,7 @@ def estimate_vector_value(input_tensor, target_output, loss_fn, optimizer, gr_ls
             optimizer.zero_grad()  # 勾配を初期化
             
             # 入力データからembedingを作成
-            make_temp_embedding(EMBEDDING_NAME,input_tensor,cache) #ある番号ごとに保存機能も後で追加か
+            make_temp_embedding(EMBEDDING_NAME,input_tensor.squeeze(0).to(device=devices.device,dtype=torch.float16),cache) #ある番号ごとに保存機能も後で追加か
 
             output = prompt_parser.get_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
             # output = model.get_text_features(input_tensor)  
@@ -138,10 +143,15 @@ def estimate_vector_value(input_tensor, target_output, loss_fn, optimizer, gr_ls
                 print(f"Iteration {i}, Loss: {loss.item()}")
             
             return loss
-
+        
         optimizer.step(closure)
+
+    print("Training completed!")
     
-    need_save_embed(gr_name,input_tensor)
+    need_save_embed(gr_name,input_tensor.squeeze(0),gr_nameow)
+
+    print("embedding save is finished!")
+
 
 def make_temp_embedding(name,vectors,cache):
     if name in cache:
@@ -183,19 +193,19 @@ def register_embedding(name,embedding):
     return embedding
 
 merge_dir = None
-def need_save_embed(name,vectors):
+def need_save_embed(name,vectors,ow):
     name = ''.join( x for x in name if (x.isalnum() or x in '._- ')).strip()
     if name=='':
         return name
     try:
         if type(vectors)==list:
             vectors = torch.cat([r[0] for r in vectors])
-        file = modules.textual_inversion.textual_inversion.create_embedding('_EmbeddingMerge_temp',vectors.size(0),True,init_text='')
+        file = modules.textual_inversion.textual_inversion.create_embedding('_EmbeddingMerge_temp',vectors.size(0),ow,init_text='')
         pt = torch.load(file,map_location='cpu')
         token = list(pt['string_to_param'].keys())[0]
         pt['string_to_param'][token] = vectors.cpu()
         torch.save(pt,file)
-        embedding_merge_dir()
+        merge_dir = embedding_merge_dir()
         target = os.path.join(merge_dir,name+'.pt')
         os.replace(file,target)
         modules.sd_hijack.model_hijack.embedding_db.load_textual_inversion_embeddings()
@@ -203,7 +213,7 @@ def need_save_embed(name,vectors):
     except:
         # traceback.print_exc()
         return name
-    
+
 def embedding_merge_dir():
     try:
         merge_dir = os.path.join(cmd_opts.embeddings_dir,'embedding_estimate')
@@ -212,5 +222,6 @@ def embedding_merge_dir():
     except:
         pass
 
-script_callbacks.on_ui_tabs(on_ui_tabs)
+    return merge_dir
 
+script_callbacks.on_ui_tabs(on_ui_tabs)
