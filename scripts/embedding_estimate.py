@@ -2,8 +2,8 @@ import modules.scripts as scripts
 import gradio as gr
 import os
 import torch
-from torch.optim import Adam, LBFGS
-from torch.nn import MSELoss
+from torch.optim import Adam, AdamW, SGD, Adadelta, Adagrad, SparseAdam, Adamax, ASGD, LBFGS, NAdam, RAdam, RMSprop, Rprop
+from torch.nn import L1Loss,MSELoss,CrossEntropyLoss,CTCLoss,NLLLoss,PoissonNLLLoss,GaussianNLLLoss,KLDivLoss,BCELoss,BCEWithLogitsLoss,MarginRankingLoss,HingeEmbeddingLoss,MultiLabelMarginLoss,HuberLoss,SmoothL1Loss,SoftMarginLoss,MultiLabelSoftMarginLoss,CosineEmbeddingLoss,MultiMarginLoss,TripletMarginLoss,TripletMarginWithDistanceLoss
 
 import modules
 from modules import devices, shared, script_callbacks, prompt_parser, sd_hijack
@@ -17,14 +17,10 @@ def on_ui_tabs():
                 minimum=0,
                 maximum=150,
                 step=1,
-                value=0,
+                value=20,
                 label="Steps"
-            )
-            checkbox = gr.Checkbox(
-                False,
-                label="Checkbox"
-            )
-        with gr.Row():
+            ) 
+
             gr_layer = gr.Slider(
                 minimum=1,
                 maximum=75,
@@ -40,7 +36,7 @@ def on_ui_tabs():
                 lines=4, 
                 max_lines=16, 
                 interactive=True, 
-                label='Your prompt (no weight/attention, do not escape parenthesis/brackets); or your merge expression (if the first character is a single quote); or a generation info to restore prompts'
+                label='Your prompt'
             )
         
         with gr.Row():
@@ -51,12 +47,20 @@ def on_ui_tabs():
                 label="learning_late"
             )
         with gr.Row():
-            gr_radio = gr.Radio(
-                choices=('Adam'), 
-                value='By parts', 
-                type='index', 
+            gr_optimizer = gr.Dropdown(
+                choices=('Adam','AdamW','SGD','Adadelta','Adagrad','SparseAdam','Adamax','ASGD','LBFGS','NAdam','RAdam','RMSprop','Rprop'), 
+                value='Adam', 
+                type='value', 
                 interactive=True, 
-                label='Group/split table by: (when not started with single quote - so only for prompts, not for merge)'
+                label='Optimizer'
+            )
+        with gr.Row():
+            gr_loss = gr.Dropdown(
+                choices=('L1Loss','MSELoss','CrossEntropyLoss','CTCLoss','NLLLoss','PoissonNLLLoss','GaussianNLLLoss','KLDivLoss','BCELoss','BCEWithLogitsLoss','MarginRankingLoss','HingeEmbeddingLoss','MultiLabelMarginLoss','HuberLoss','SmoothL1Loss','SoftMarginLoss','MultiLabelSoftMarginLoss','CosineEmbeddingLoss','MultiMarginLoss','TripletMarginLoss','TripletMarginWithDistanceLoss'), 
+                value='MSELoss', 
+                type='value', 
+                interactive=True, 
+                label='loss'
             )
         
         with gr.Row():
@@ -65,12 +69,6 @@ def on_ui_tabs():
                 maximum = 100000,
                 minimum = 0,
                 label="learning_step"
-            )
-        
-        with gr.Row():
-            gr_button = gr.Button(
-                'Estimate!',
-                variant='primary'
             )
         
         with gr.Row():
@@ -85,12 +83,18 @@ def on_ui_tabs():
                 label='enable over write embedding'
             ) 
         
-        # gr_button.click(fn=gr_func, inputs=[gr_name,gr_text,gr_radio,gr_true], outputs=[gr_html,gr_name,gr_text], show_progress=False)
-        gr_button.click(fn=gr_func, inputs=[gr_text,gr_radio,gr_step,gr_layer,gr_late,gr_lstep,gr_name,gr_nameow], show_progress=False)
+        with gr.Row():
+            gr_button = gr.Button(
+                'Estimate!',
+                variant='primary'
+            )
+        
+        # gr_button.click(fn=gr_func, inputs=[gr_name,gr_text,gr_optimizer,gr_true], outputs=[gr_html,gr_name,gr_text], show_progress=False)
+        gr_button.click(fn=gr_func, inputs=[gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_name,gr_nameow], show_progress=False)
 
-    return [(ui_component, "Extension Template", "extension_template_tab")]
+    return [(ui_component, "Embedding Estimate", "extension_template_tab")]
 
-def gr_func(gr_text,gr_radio,gr_step,gr_layer,gr_late,gr_lstep,gr_name,gr_nameow):
+def gr_func(gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_name,gr_nameow):
 
     if gr_name is None:
         print("Please write save name")
@@ -99,29 +103,31 @@ def gr_func(gr_text,gr_radio,gr_step,gr_layer,gr_late,gr_lstep,gr_name,gr_nameow
     # 入力データの初期化（Nx768次元の配列）
     input_tensor = torch.randn(1, gr_layer, 768, requires_grad=True)  # 入力テンソルに勾配を追跡させる
 
-    # .squeeze(0).to(device=devices.device,dtype=torch.float16)
 
-    # input_tensor = torch.randn(1, gr_layer, 768).squeeze(0).to(device=devices.device,dtype=torch.float16)  # 入力テンソルに勾配を追跡させる
-    input_tensor_opt = input_tensor.detach().requires_grad_(True)
-
+    # 関数に渡す引数（辞書）
+    optimizer_arg = {
+        'params':[input_tensor],
+        'lr': gr_late
+    }  
+    
     # オプティマイザの選択
-    if gr_radio == 'Adam':
-        optimizer = Adam([input_tensor], lr=gr_late)
+    if gr_optimizer in globals():
+        optimizer_function = globals()[gr_optimizer]
+        optimizer = optimizer_function(**optimizer_arg)
     else:
-        optimizer = Adam([input_tensor], lr=gr_late)
+        print("The specified optimizer does not exist.")
     
     # 損失関数の定義
-    loss_fn = MSELoss()
+    if gr_loss in globals():
+        loss_function = globals()[gr_loss]
+        loss_fn = loss_function()
+    else:
+        print("The specified loss_function does not exist.")
     
+
     # 目的出力
     target_output = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step)
 
-    # estimate_vector_value(input_tensor, target_output, loss_fn, optimizer, gr_lstep, gr_step,gr_name)
-
-    # print(f"{input_tensor[0][0].cond}")
-
-# def estimate_vector_value(input_tensor, target_output, loss_fn, optimizer, gr_lstep, gr_step, gr_name):
-    
     EMBEDDING_NAME = 'embedding_estimate'
     cache = {}
     
@@ -225,3 +231,4 @@ def embedding_merge_dir():
     return merge_dir
 
 script_callbacks.on_ui_tabs(on_ui_tabs)
+
