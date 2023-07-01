@@ -54,7 +54,7 @@ def on_ui_tabs():
                 interactive=True, 
                 label='Optimizer'
             )
-        with gr.Row():
+
             gr_loss = gr.Dropdown(
                 choices=('L1Loss','MSELoss','CrossEntropyLoss','CTCLoss','NLLLoss','PoissonNLLLoss','GaussianNLLLoss','KLDivLoss','BCELoss','BCEWithLogitsLoss','MarginRankingLoss','HingeEmbeddingLoss','MultiLabelMarginLoss','HuberLoss','SmoothL1Loss','SoftMarginLoss','MultiLabelSoftMarginLoss','CosineEmbeddingLoss','MultiMarginLoss','TripletMarginLoss','TripletMarginWithDistanceLoss'), 
                 value='MSELoss', 
@@ -70,7 +70,16 @@ def on_ui_tabs():
                 minimum = 0,
                 label="learning_step"
             )
-        
+
+        with gr.Row():
+            gr_init = gr.Textbox(
+                value='', 
+                lines=1, 
+                max_lines=1, 
+                interactive=True, 
+                label='initial prompt. (If blank, the initial value is random. If not blank, the number of LAYERS is automatically changed to the number of tokens in the input prompt.)'
+            )
+
         with gr.Row():
             gr_name = gr.Textbox(
                 value='', 
@@ -90,18 +99,29 @@ def on_ui_tabs():
             )
         
         # gr_button.click(fn=gr_func, inputs=[gr_name,gr_text,gr_optimizer,gr_true], outputs=[gr_html,gr_name,gr_text], show_progress=False)
-        gr_button.click(fn=gr_func, inputs=[gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_name,gr_nameow], show_progress=False)
+        gr_button.click(fn=gr_func, inputs=[gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_init,gr_name,gr_nameow], show_progress=False)
 
     return [(ui_component, "Embedding Estimate", "extension_template_tab")]
 
-def gr_func(gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_name,gr_nameow):
+def gr_func(gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_init,gr_name,gr_nameow):
 
-    if gr_name is None:
+    if gr_name == '':
         print("Please write save name")
         return ''
-
+    
     # 入力データの初期化（Nx768次元の配列）
-    input_tensor = torch.randn(1, gr_layer, 768, requires_grad=True)  # 入力テンソルに勾配を追跡させる
+    if gr_init != '' and gr_init is not None:
+        clip = shared.sd_model.cond_stage_model
+
+        part = clip.tokenize_line(gr_init)
+        cnt = part[1]
+
+        trans = clip.encode_embedding_init_text(gr_init,cnt)
+
+        input_tensor = trans[:cnt].to(device=devices.device,dtype=torch.float32).requires_grad_(True)
+
+    else:
+        input_tensor = torch.randn(1, gr_layer, 768, requires_grad=True)  # 入力テンソルに勾配を追跡させる
 
 
     # 関数に渡す引数（辞書）
