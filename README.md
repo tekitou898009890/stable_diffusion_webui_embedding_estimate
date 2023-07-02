@@ -67,6 +67,8 @@ option: The number of tokens can be overridden by the number of LAYERS.
 
 If on, the number of tokens actually created for embedding will be the number specified in layers; if off, the number of tokens will be calculated from the text of init_text and saved as the number of tokens.
 
+If the number of tokens exceeds the number of LAYERS, it is rounded down, and if there is a shortage, the shortage is filled with a 0 vector.
+
 The fewer the number of layers, the less learning time is required.
 
 
@@ -140,7 +142,7 @@ t2i,i2iで使うプロンプト。構文はwebuiのものがそのまま使え�
 
 オプション：The number of tokens can be overridden by the number of LAYERS.
 
-onにすると実際に作成されるembeddingのトークン数がlayerで指定した数値になる。OFFだとinit_textのテキストから算出されたトークン数で保存される。
+onにすると実際に作成されるembeddingのトークン数がlayerで指定した数値になる。トークン数がlayer数よりも超過した場合は切り捨て、不足した場合は不足分を0ベクトルで埋める。OFFだとinit_textのテキストから算出されたトークン数で保存される。
 
 layer数が少ない分、学習時間は短く済む。
 
