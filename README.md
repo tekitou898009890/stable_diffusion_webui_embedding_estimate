@@ -37,7 +37,7 @@ The number of steps to be used in t2i,i2i. The number of steps used in t2i,i2i m
 
 Prompt used by t2i,i2i. Syntax should be the same as webui's (need to check if it works with other syntax than emphasized syntax).
 
-### layer
+### token
 
 The number of tokens to use for embedding.
 
@@ -114,7 +114,7 @@ t2i,i2iで使うstep数。普段使うstep数でいいのかもしれない(要�
 
 t2i,i2iで使うプロンプト。構文はwebuiのものがそのまま使えるはず(強調構文以外の構文ではどうなるか要検証)
 
-### layer
+### token
 
 埋め込みに使用するトークン数。
 
