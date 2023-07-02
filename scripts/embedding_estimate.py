@@ -2,6 +2,7 @@ import modules.scripts as scripts
 import gradio as gr
 import os
 import torch
+import tqdm
 from torch.optim import Adam, AdamW, SGD, Adadelta, Adagrad, SparseAdam, Adamax, ASGD, LBFGS, NAdam, RAdam, RMSprop, Rprop
 from torch.nn import L1Loss,MSELoss,CrossEntropyLoss,CTCLoss,NLLLoss,PoissonNLLLoss,GaussianNLLLoss,KLDivLoss,BCELoss,BCEWithLogitsLoss,MarginRankingLoss,HingeEmbeddingLoss,MultiLabelMarginLoss,HuberLoss,SmoothL1Loss,SoftMarginLoss,MultiLabelSoftMarginLoss,CosineEmbeddingLoss,MultiMarginLoss,TripletMarginLoss,TripletMarginWithDistanceLoss
 
@@ -114,11 +115,46 @@ def gr_func(gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_in
         clip = shared.sd_model.cond_stage_model
 
         part = clip.tokenize_line(gr_init)
+
         cnt = part[1]
+    
+        # trans = clip.encode_embedding_init_text(gr_init,cnt)
 
-        trans = clip.encode_embedding_init_text(gr_init,cnt)
+        before_emb = None
+        all_vector = torch.zeros(cnt, 768).to(device=devices.device,dtype=torch.float32)
 
-        input_tensor = trans[:cnt].to(device=devices.device,dtype=torch.float32).requires_grad_(True)
+        #　embeddingとtokenを分離と変換後、同位置で再結合
+        for count,emb in enumerate(part[0][0].fixes):
+            
+            vec = emb.embedding.vec
+            start = emb.offset
+            end = emb.embedding.vectors + start
+            name = emb.embedding.name
+
+            if count == 0: #初回処理
+                if start == 0:
+                    all_vector[start:end] = vec
+                else: #左に単語があればそれを代入
+                    all_vector[:start] = clip.encode_embedding_init_text(gr_init.split(name)[0],start-1)
+                    all_vector[start:end] = vec
+            else:
+                before_start = before_emb.offset
+                before_end = before_emb.embedding.vectors + before_start
+                before_name = before_emb.embedding.name
+                if start - before_end == 0: #間に単語がなければ今のembeddingだけを代入
+                    all_vector[start:end] = vec
+                else:
+                    between_words = gr_init.split(before_name, 1)[1].split(name, 1)[0]
+                    all_vector[before_end:start] = clip.encode_embedding_init_text(between_words,start-before_end)
+                    
+                    if count == len(part[0][0].fixes): #最終処理
+                        all_vector[start:end] = vec
+                        if end != cnt: #右に単語があればそれを代入
+                            all_vector[end:cnt] = clip.encode_embedding_init_text(gr_init.split(name)[1],cnt-end)
+
+            before_emb = emb 
+            
+        input_tensor = all_vector.unsqueeze(0).to(device=devices.device,dtype=torch.float32).requires_grad_(True)
 
     else:
         input_tensor = torch.randn(1, gr_layer, 768, requires_grad=True)  # 入力テンソルに勾配を追跡させる
@@ -150,9 +186,10 @@ def gr_func(gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_in
 
     EMBEDDING_NAME = 'embedding_estimate'
     cache = {}
+    learning_step = int(gr_lstep)
     
     # 勾配降下法による最適化ループ
-    for i in range(int(gr_lstep)):
+    for i in tqdm.tqdm(range(learning_step)):
         def closure():
             optimizer.zero_grad()  # 勾配を初期化
             
@@ -165,8 +202,8 @@ def gr_func(gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_in
             loss = loss_fn(output[0][0].cond, target_output[0][0].cond)  # 損失を計算
             loss.backward()  # 勾配を計算
 
-            if i % 100 == 0:
-                print(f"Iteration {i}, Loss: {loss.item()}")
+            if i % 100 == 0 and i == learning_step:
+                print(f"\nIteration {i}, Loss: {loss.item()}")
             
             return loss
         
