@@ -27,7 +27,7 @@ def on_ui_tabs():
                 maximum=75,
                 step=1,
                 value=1,
-                label="layer"
+                label="token"
             )
 
             # TODO: add more UI components (cf. https://gradio.app/docs/#components)
