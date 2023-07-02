@@ -80,6 +80,9 @@ def on_ui_tabs():
                 interactive=True, 
                 label='initial prompt. (If blank, the initial value is random. If not blank, the number of LAYERS is automatically changed to the number of tokens in the input prompt.)'
             )
+            gr_layerow = gr.Checkbox(
+                label='The number of tokens can be overridden by the number of LAYERS.'
+            ) 
 
         with gr.Row():
             gr_name = gr.Textbox(
@@ -100,11 +103,11 @@ def on_ui_tabs():
             )
         
         # gr_button.click(fn=gr_func, inputs=[gr_name,gr_text,gr_optimizer,gr_true], outputs=[gr_html,gr_name,gr_text], show_progress=False)
-        gr_button.click(fn=gr_func, inputs=[gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_init,gr_name,gr_nameow], show_progress=False)
+        gr_button.click(fn=gr_func, inputs=[gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_init,gr_layerow,gr_name,gr_nameow], show_progress=False)
 
     return [(ui_component, "Embedding Estimate", "extension_template_tab")]
 
-def gr_func(gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_init,gr_name,gr_nameow):
+def gr_func(gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_init,gr_layerow,gr_name,gr_nameow):
 
     if gr_name == '':
         print("Please write save name")
@@ -153,8 +156,11 @@ def gr_func(gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_in
                             all_vector[end:cnt] = clip.encode_embedding_init_text(gr_init.split(name)[1],cnt-end)
 
             before_emb = emb 
-            
-        input_tensor = all_vector.unsqueeze(0).to(device=devices.device,dtype=torch.float32).requires_grad_(True)
+        
+        if gr_layerow:
+            input_tensor = all_vector[:gr_layer,:].unsqueeze(0).to(device=devices.device,dtype=torch.float32).requires_grad_(True)
+        else:
+            input_tensor = all_vector.unsqueeze(0).to(device=devices.device,dtype=torch.float32).requires_grad_(True)
 
     else:
         input_tensor = torch.randn(1, gr_layer, 768, requires_grad=True)  # 入力テンソルに勾配を追跡させる
@@ -202,7 +208,7 @@ def gr_func(gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_in
             loss = loss_fn(output[0][0].cond, target_output[0][0].cond)  # 損失を計算
             loss.backward()  # 勾配を計算
 
-            if i % 100 == 0 and i == learning_step:
+            if i % 100 == 0 or i == learning_step:
                 print(f"\nIteration {i}, Loss: {loss.item()}")
             
             return loss
