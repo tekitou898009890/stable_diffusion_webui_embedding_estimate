@@ -63,6 +63,13 @@ Additional learning prompt.
 
 The prompt is only converted to embedding (embedding layer) before input to the encoder, so entering the emphasis syntax here will not be emphasized.
 
+option: The number of tokens can be overridden by the number of LAYERS.
+
+If on, the number of tokens actually created for embedding will be the number specified in layers; if off, the number of tokens will be calculated from the text of init_text and saved as the number of tokens.
+
+The fewer the number of layers, the less learning time is required.
+
+
 ### name
 
 The name under which the embedding will be saved. Can be overwritten by turning on the check button next to it.
@@ -129,7 +136,13 @@ t2i,i2iで使うプロンプト。構文はwebuiのものがそのまま使え�
 
 追加学習用のプロンプト入力欄。
 
-プロンプトをencoderに入力する前のembedding(埋め込み層)に変換するだけなので、ここで強調構文を入力しても強調されません。
+プロンプトをencoderに入力する前のembedding(埋め込み層)に変換するだけで、強調構文をここで入力しても強調されない。
+
+オプション：The number of tokens can be overridden by the number of LAYERS.
+
+onにすると実際に作成されるembeddingのトークン数がlayerで指定した数値になる。OFFだとinit_textのテキストから算出されたトークン数で保存される。
+
+layer数が少ない分、学習時間は短く済む。
 
 ### name
 
