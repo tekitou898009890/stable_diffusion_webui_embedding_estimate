@@ -4,6 +4,7 @@ import os
 import tqdm
 import torch
 from torch.optim import Adam, AdamW, SGD, Adadelta, Adagrad, SparseAdam, Adamax, ASGD, LBFGS, NAdam, RAdam, RMSprop, Rprop
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts,OneCycleLR,CyclicLR,ReduceLROnPlateau,SequentialLR,ChainedScheduler,CosineAnnealingLR,PolynomialLR,ExponentialLR,LinearLR,ConstantLR,MultiStepLR,MultiStepLR,MultiplicativeLR,LambdaLR
 from torch.nn import L1Loss,MSELoss,CrossEntropyLoss,CTCLoss,NLLLoss,PoissonNLLLoss,GaussianNLLLoss,KLDivLoss,BCELoss,BCEWithLogitsLoss,MarginRankingLoss,HingeEmbeddingLoss,MultiLabelMarginLoss,HuberLoss,SmoothL1Loss,SoftMarginLoss,MultiLabelSoftMarginLoss,CosineEmbeddingLoss,MultiMarginLoss,TripletMarginLoss,TripletMarginWithDistanceLoss
 
 import modules
@@ -12,7 +13,7 @@ from modules.textual_inversion.textual_inversion import Embedding
 from modules.shared import opts, cmd_opts
 
 from lion_pytorch import Lion
-
+from prodigyopt import Prodigy
 
 def on_ui_tabs():
     with gr.Blocks(analytics_enabled=False) as ui_component:
@@ -52,7 +53,7 @@ def on_ui_tabs():
             )
         with gr.Row():
             gr_optimizer = gr.Dropdown(
-                choices=('Adam','AdamW','Lion','SGD','Adadelta','Adagrad','SparseAdam','Adamax','ASGD','LBFGS','NAdam','RAdam','RMSprop','Rprop'), 
+                choices=('Adam','AdamW','Lion','Prodigy','SGD','Adadelta','Adagrad','SparseAdam','Adamax','ASGD','LBFGS','NAdam','RAdam','RMSprop','Rprop'), 
                 value='Adam', 
                 type='value', 
                 interactive=True, 
@@ -65,6 +66,14 @@ def on_ui_tabs():
                 type='value', 
                 interactive=True, 
                 label='loss'
+            )
+
+            gr_scheduler = gr.Dropdown(
+                choices=('CosineAnnealingWarmRestarts','OneCycleLR','CyclicLR','ReduceLROnPlateau','SequentialLR','ChainedScheduler','CosineAnnealingLR','PolynomialLR','ExponentialLR','LinearLR','ConstantLR','MultiStepLR','MultiStepLR','MultiplicativeLR','LambdaLR'), 
+                value='LambdaLR', 
+                type='value', 
+                interactive=True, 
+                label='scheduler'
             )
         
         with gr.Row():
@@ -114,11 +123,11 @@ def on_ui_tabs():
         )
         
         # gr_button.click(fn=gr_func, inputs=[gr_name,gr_text,gr_optimizer,gr_true], outputs=[gr_html,gr_name,gr_text], show_progress=False)
-        gr_button.click(fn=gr_func, inputs=[gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_init,gr_layerow,gr_name,gr_nameow], show_progress=False)
+        gr_button.click(fn=gr_func, inputs=[gr_text,gr_optimizer,gr_loss,gr_scheduler,gr_step,gr_layer,gr_late,gr_lstep,gr_init,gr_layerow,gr_name,gr_nameow], show_progress=False)
 
     return [(ui_component, "Embedding Estimate", "extension_template_tab")]
 
-def gr_func(gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_init,gr_layerow,gr_name,gr_nameow):
+def gr_func(gr_text,gr_optimizer,gr_loss,gr_scheduler,gr_step,gr_layer,gr_late,gr_lstep,gr_init,gr_layerow,gr_name,gr_nameow):
 
     if gr_name == '':
         print("Please write save name")
@@ -187,6 +196,8 @@ def gr_func(gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_in
     if gr_optimizer in globals():
         optimizer_function = globals()[gr_optimizer]
         optimizer = optimizer_function(**optimizer_arg)
+
+        
     else:
         print("The specified optimizer does not exist.")
     
@@ -197,6 +208,20 @@ def gr_func(gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_in
     else:
         print("The specified loss_function does not exist.")
     
+
+    # 関数に渡す引数（辞書）
+    scheduler_arg = {
+        'optimizer':[optimizer]
+    }  
+
+    # スケジューラの選択
+    if gr_scheduler in globals():
+        scheduler_function = globals()[gr_scheduler]
+        scheduler = scheduler_function(**scheduler_arg)
+        if gr_optimizer == "Prodigy":
+            # n_epoch is the total number of epochs to train the network
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=gr_lstep/100)
+
 
     # 目的出力
     target_output = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step)
@@ -225,6 +250,7 @@ def gr_func(gr_text,gr_optimizer,gr_loss,gr_step,gr_layer,gr_late,gr_lstep,gr_in
             return loss
         
         optimizer.step(closure)
+        scheduler.step()
 
         global stop_training
         
