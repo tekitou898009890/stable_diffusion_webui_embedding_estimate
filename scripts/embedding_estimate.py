@@ -4,7 +4,8 @@ import os
 import tqdm
 import torch
 from torch.optim import Adam, AdamW, SGD, Adadelta, Adagrad, SparseAdam, Adamax, ASGD, LBFGS, NAdam, RAdam, RMSprop, Rprop
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts,OneCycleLR,CyclicLR,ReduceLROnPlateau,SequentialLR,ChainedScheduler,CosineAnnealingLR,PolynomialLR,ExponentialLR,LinearLR,ConstantLR,MultiStepLR,MultiStepLR,MultiplicativeLR,LambdaLR
+# from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts,OneCycleLR,CyclicLR,ReduceLROnPlateau,SequentialLR,ChainedScheduler,CosineAnnealingLR,PolynomialLR,ExponentialLR,LinearLR,ConstantLR,MultiStepLR,MultiStepLR,MultiplicativeLR,LambdaLR
+import torch.optim.lr_scheduler
 from torch.nn import L1Loss,MSELoss,CrossEntropyLoss,CTCLoss,NLLLoss,PoissonNLLLoss,GaussianNLLLoss,KLDivLoss,BCELoss,BCEWithLogitsLoss,MarginRankingLoss,HingeEmbeddingLoss,MultiLabelMarginLoss,HuberLoss,SmoothL1Loss,SoftMarginLoss,MultiLabelSoftMarginLoss,CosineEmbeddingLoss,MultiMarginLoss,TripletMarginLoss,TripletMarginWithDistanceLoss
 
 import modules
@@ -70,7 +71,7 @@ def on_ui_tabs():
 
             gr_scheduler = gr.Dropdown(
                 choices=('CosineAnnealingWarmRestarts','OneCycleLR','CyclicLR','ReduceLROnPlateau','SequentialLR','ChainedScheduler','CosineAnnealingLR','PolynomialLR','ExponentialLR','LinearLR','ConstantLR','MultiStepLR','MultiStepLR','MultiplicativeLR','LambdaLR'), 
-                value='LambdaLR', 
+                value='ConstantLR', 
                 type='value', 
                 interactive=True, 
                 label='scheduler'
@@ -196,10 +197,9 @@ def gr_func(gr_text,gr_optimizer,gr_loss,gr_scheduler,gr_step,gr_layer,gr_late,g
     if gr_optimizer in globals():
         optimizer_function = globals()[gr_optimizer]
         optimizer = optimizer_function(**optimizer_arg)
-
-        
     else:
         print("The specified optimizer does not exist.")
+    
     
     # 損失関数の定義
     if gr_loss in globals():
@@ -211,16 +211,19 @@ def gr_func(gr_text,gr_optimizer,gr_loss,gr_scheduler,gr_step,gr_layer,gr_late,g
 
     # 関数に渡す引数（辞書）
     scheduler_arg = {
-        'optimizer':[optimizer]
+        'optimizer':optimizer
     }  
 
     # スケジューラの選択
-    if gr_scheduler in globals():
-        scheduler_function = globals()[gr_scheduler]
-        scheduler = scheduler_function(**scheduler_arg)
+    if gr_scheduler in dir(torch.optim.lr_scheduler):
+        # scheduler_function = globals()[gr_scheduler]
+        scheduler_function = getattr(torch.optim.lr_scheduler, gr_scheduler)
+        scheduler = scheduler_function(**scheduler_arg)        
         if gr_optimizer == "Prodigy":
             # n_epoch is the total number of epochs to train the network
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=gr_lstep/100)
+    else:
+        print("The specified Scheduler does not exist.")
 
 
     # 目的出力
