@@ -32,7 +32,7 @@ def on_ui_tabs():
                 maximum=75,
                 step=1,
                 value=1,
-                label="layer"
+                label="tokens"
             )
 
             # TODO: add more UI components (cf. https://gradio.app/docs/#components)
@@ -93,8 +93,11 @@ def on_ui_tabs():
                 interactive=True, 
                 label='initial prompt. (If blank, the initial value is random. If not blank, the number of LAYERS is automatically changed to the number of tokens in the input prompt.)'
             )
-            gr_layerow = gr.Checkbox(
-                label='The number of tokens can be overridden by the number of LAYERS.'
+            gr_layerow = gr.Radio(
+                choices=["init_text","tokens"],
+                value="init_text",
+                type="index",
+                label='Selects the number of tokens used for embedding, either the specified number or the number set in init_text. '
             ) 
 
         with gr.Row():
@@ -114,11 +117,24 @@ def on_ui_tabs():
                 'Estimate!',
                 variant='primary'
             )
-            gr_interrupt = gr.Button("Interrupt", elem_id="train_interrupt_preprocessing")
+            gr_interrupt = gr.Button(
+                "Interrupt", 
+                elem_id="train_interrupt_preprocessing"
+            )
+            gr_interrupt_not_save = gr.Button(
+                "Interrupt (not save)", 
+                elem_id="train_interrupt_not_save_preprocessing"
+            )
         
         #interrupt training
         gr_interrupt.click(
             fn=gr_interrupt_train,
+            inputs=[],
+            outputs=[],
+        )
+
+        gr_interrupt_not_save.click(
+            fn=gr_interrupt_not_save_train,
             inputs=[],
             outputs=[],
         )
@@ -178,10 +194,12 @@ def gr_func(gr_text,gr_optimizer,gr_loss,gr_scheduler,gr_step,gr_layer,gr_late,g
 
             before_emb = emb 
         
-        if gr_layerow:
-            input_tensor = all_vector[:gr_layer,:].unsqueeze(0).to(device=devices.device,dtype=torch.float32).requires_grad_(True)
-        else:
-            input_tensor = all_vector.unsqueeze(0).to(device=devices.device,dtype=torch.float32).requires_grad_(True)
+        #for_end
+
+        if gr_layerow == 0 and gr_name != '':
+            gr_layer == cnt
+
+        input_tensor = all_vector[:gr_layer,:].unsqueeze(0).to(device=devices.device,dtype=torch.float32).requires_grad_(True)
 
     else:
         input_tensor = torch.randn(1, gr_layer, 768, requires_grad=True)  # 入力テンソルに勾配を追跡させる
@@ -226,33 +244,46 @@ def gr_func(gr_text,gr_optimizer,gr_loss,gr_scheduler,gr_step,gr_layer,gr_late,g
         print("The specified Scheduler does not exist.")
 
 
-    # 目的出力
-    target_output = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step)
 
     EMBEDDING_NAME = 'embedding_estimate'
     cache = {}
     learning_step = int(gr_lstep)
+
+    start_pos:int = 1
+    end_pos:int = gr_layer + start_pos
     
     # 勾配降下法による最適化ループ
     for i in tqdm.tqdm(range(learning_step)):
+        
+        padding_text:str = ""
+
         def closure():
             optimizer.zero_grad()  # 勾配を初期化
+
+            nonlocal padding_text
+            padding_text = padding_text + "<|endoftext|>"
             
             # 入力データからembedingを作成
             make_temp_embedding(EMBEDDING_NAME,input_tensor.squeeze(0).to(device=devices.device,dtype=torch.float16),cache) #ある番号ごとに保存機能も後で追加か
 
-            output = prompt_parser.get_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
+            # 目的出力
+            target_output = prompt_parser.get_learned_conditioning(shared.sd_model, [padding_text + gr_text], gr_step)
+
+            output = prompt_parser.get_learned_conditioning(shared.sd_model, [padding_text + EMBEDDING_NAME], gr_step) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
             # output = model.get_text_features(input_tensor)  
             
             loss = loss_fn(output[0][0].cond, target_output[0][0].cond)  # 損失を計算
+            # loss = loss_fn(output[0][0].cond[start_pos:end_pos], target_output[0][0].cond[start_pos:end_pos])  # 損失を計算
             loss.backward()  # 勾配を計算
 
-            if i % 100 == 0 or i == learning_step:
+            if j % 75 == 0 or i == learning_step:
                 print(f"\nIteration {i}, Loss: {loss.item()}")
             
             return loss
         
-        optimizer.step(closure)
+        for j in range(75):
+            optimizer.step(closure)
+        
         scheduler.step()
 
         global stop_training
@@ -264,16 +295,31 @@ def gr_func(gr_text,gr_optimizer,gr_loss,gr_scheduler,gr_step,gr_layer,gr_late,g
 
     print("Training completed!")
     
-    need_save_embed(gr_name,input_tensor.squeeze(0),gr_nameow)
+    global stop_training_save
 
-    print("embedding save is finished!")
+    if stop_training_save:
+        need_save_embed(gr_name,input_tensor.squeeze(0),gr_nameow)
+
+        print("embedding save is finished!")
+    else:
+        stop_training_save = True
 
 
 stop_training = False
+stop_training_save = True
 
 def gr_interrupt_train():
     global stop_training 
+    global stop_training_save
     stop_training = True
+    stop_training_save = True
+
+def gr_interrupt_not_save_train():
+    global stop_training 
+    global stop_training_save
+    stop_training = True
+    stop_training_save = False
+
 
 def make_temp_embedding(name,vectors,cache):
     if name in cache:
@@ -347,4 +393,3 @@ def embedding_merge_dir():
     return merge_dir
 
 script_callbacks.on_ui_tabs(on_ui_tabs)
-
