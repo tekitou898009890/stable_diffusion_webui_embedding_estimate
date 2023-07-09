@@ -13,6 +13,8 @@ from modules import devices, shared, script_callbacks, prompt_parser, sd_hijack
 from modules.textual_inversion.textual_inversion import Embedding
 from modules.shared import opts, cmd_opts
 
+from ldm.util import default 
+
 from lion_pytorch import Lion
 from prodigyopt import Prodigy
 
@@ -32,7 +34,7 @@ def on_ui_tabs():
                 maximum=75,
                 step=1,
                 value=1,
-                label="layer"
+                label="tokens"
             )
 
             # TODO: add more UI components (cf. https://gradio.app/docs/#components)
@@ -43,6 +45,14 @@ def on_ui_tabs():
                 max_lines=16, 
                 interactive=True, 
                 label='Your prompt'
+            )
+
+        with gr.Row():
+            gr_lrmodel = gr.Radio(
+                choices=["Transformer","U-NET"],
+                value="Transformer",
+                type="value",
+                label='Selects training part. Transformer is encoder process. U-NET is denoising process.'
             )
         
         with gr.Row():
@@ -84,6 +94,12 @@ def on_ui_tabs():
                 minimum = 0,
                 label="learning_step"
             )
+            gr_epoch = gr.Number(
+                value = 100,
+                maximum = 100000,
+                minimum = 0,
+                label="1 epoch in N step"
+            )
 
         with gr.Row():
             gr_init = gr.Textbox(
@@ -93,8 +109,11 @@ def on_ui_tabs():
                 interactive=True, 
                 label='initial prompt. (If blank, the initial value is random. If not blank, the number of LAYERS is automatically changed to the number of tokens in the input prompt.)'
             )
-            gr_layerow = gr.Checkbox(
-                label='The number of tokens can be overridden by the number of LAYERS.'
+            gr_layerow = gr.Radio(
+                choices=["init_text","tokens"],
+                value="init_text",
+                type="index",
+                label='Selects the number of tokens used for embedding, either the specified number or the number set in init_text. '
             ) 
 
         with gr.Row():
@@ -114,7 +133,14 @@ def on_ui_tabs():
                 'Estimate!',
                 variant='primary'
             )
-            gr_interrupt = gr.Button("Interrupt", elem_id="train_interrupt_preprocessing")
+            gr_interrupt = gr.Button(
+                "Interrupt", 
+                elem_id="train_interrupt_preprocessing"
+            )
+            gr_interrupt_not_save = gr.Button(
+                "Interrupt (not save)", 
+                elem_id="train_interrupt_not_save_preprocessing"
+            )
         
         #interrupt training
         gr_interrupt.click(
@@ -122,13 +148,19 @@ def on_ui_tabs():
             inputs=[],
             outputs=[],
         )
+
+        gr_interrupt_not_save.click(
+            fn=gr_interrupt_not_save_train,
+            inputs=[],
+            outputs=[],
+        )
         
         # gr_button.click(fn=gr_func, inputs=[gr_name,gr_text,gr_optimizer,gr_true], outputs=[gr_html,gr_name,gr_text], show_progress=False)
-        gr_button.click(fn=gr_func, inputs=[gr_text,gr_optimizer,gr_loss,gr_scheduler,gr_step,gr_layer,gr_late,gr_lstep,gr_init,gr_layerow,gr_name,gr_nameow], show_progress=False)
+        gr_button.click(fn=gr_func, inputs=[gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_scheduler,gr_lstep,gr_epoch,gr_init,gr_layerow,gr_name,gr_nameow], show_progress=False)
 
     return [(ui_component, "Embedding Estimate", "extension_template_tab")]
 
-def gr_func(gr_text,gr_optimizer,gr_loss,gr_scheduler,gr_step,gr_layer,gr_late,gr_lstep,gr_init,gr_layerow,gr_name,gr_nameow):
+def gr_func(gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_scheduler,gr_lstep,gr_epoch,gr_init,gr_layerow,gr_name,gr_nameow):
 
     if gr_name == '':
         print("Please write save name")
@@ -178,10 +210,12 @@ def gr_func(gr_text,gr_optimizer,gr_loss,gr_scheduler,gr_step,gr_layer,gr_late,g
 
             before_emb = emb 
         
-        if gr_layerow:
-            input_tensor = all_vector[:gr_layer,:].unsqueeze(0).to(device=devices.device,dtype=torch.float32).requires_grad_(True)
-        else:
-            input_tensor = all_vector.unsqueeze(0).to(device=devices.device,dtype=torch.float32).requires_grad_(True)
+        #for_end
+
+        if gr_layerow == 0:
+            gr_layer == cnt
+
+        input_tensor = all_vector[:gr_layer,:].unsqueeze(0).to(device=devices.device,dtype=torch.float32).requires_grad_(True)
 
     else:
         input_tensor = torch.randn(1, gr_layer, 768, requires_grad=True)  # 入力テンソルに勾配を追跡させる
@@ -221,38 +255,81 @@ def gr_func(gr_text,gr_optimizer,gr_loss,gr_scheduler,gr_step,gr_layer,gr_late,g
         scheduler = scheduler_function(**scheduler_arg)        
         if gr_optimizer == "Prodigy":
             # n_epoch is the total number of epochs to train the network
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=gr_lstep/100)
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=gr_lstep/gr_epoch)
     else:
         print("The specified Scheduler does not exist.")
 
-
     # 目的出力
-    target_output = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step)
+    target_cond = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step)
 
     EMBEDDING_NAME = 'embedding_estimate'
     cache = {}
     learning_step = int(gr_lstep)
+
+    start_pos:int = 1
+    end_pos:int = gr_layer + start_pos
     
     # 勾配降下法による最適化ループ
     for i in tqdm.tqdm(range(learning_step)):
-        def closure():
-            optimizer.zero_grad()  # 勾配を初期化
+        
+        optimizer.zero_grad()  # 勾配を初期化
             
-            # 入力データからembedingを作成
-            make_temp_embedding(EMBEDDING_NAME,input_tensor.squeeze(0).to(device=devices.device,dtype=torch.float16),cache) #ある番号ごとに保存機能も後で追加か
+        # 入力データからembedingを作成
+        make_temp_embedding(EMBEDDING_NAME,input_tensor.squeeze(0).to(device=devices.device,dtype=torch.float16),cache) #ある番号ごとに保存機能も後で追加か
 
-            output = prompt_parser.get_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
-            # output = model.get_text_features(input_tensor)  
-            
-            loss = loss_fn(output[0][0].cond, target_output[0][0].cond)  # 損失を計算
+        cond = prompt_parser.get_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
+        # output = model.get_text_features(input_tensor)
+        
+        def closure():
+
+            # loss = loss_fn(output[0][0].cond, target_output[0][0].cond)  # 損失を計算
+            loss = loss_fn(cond[0][0].cond[start_pos:end_pos], target_cond[0][0].cond[start_pos:end_pos])  # 損失を計算
             loss.backward()  # 勾配を計算
 
-            if i % 100 == 0 or i == learning_step:
+            if i % gr_epoch == 0 or i == learning_step:
                 print(f"\nIteration {i}, Loss: {loss.item()}")
             
             return loss
         
-        optimizer.step(closure)
+        def denoise():
+            #stable-diffusion-webui_1.2.1\repositories\stable-diffusion-stability-ai\ldm\models\diffusion\ddpm.py
+            
+            x_start = torch.randn(1,4,64,64).to(device=devices.device)
+            shared.sd_model.register_schedule()
+            t = torch.randint(0, shared.sd_model.num_timesteps, (x_start.shape[0],), device=shared.device).long()
+            
+            # noise = None
+            # noise = default(noise, lambda: torch.randn_like(x_start))
+
+            noise = torch.randn_like(x_start).to(device=devices.device)
+            x_noisy = shared.sd_model.q_sample(x_start=x_start, t=t, noise=noise)
+
+            model_output = shared.sd_model.apply_model(x_noisy, t, cond[0][0].cond)
+            target = shared.sd_model.apply_model(x_noisy, t, target_cond[0][0].cond)
+
+            loss_simple = shared.sd_model.get_loss(model_output, target, mean=False).mean([1, 2, 3])
+
+            
+            logvar_t = shared.sd_model.logvar[t].to(shared.sd_model.device)
+            loss = loss_simple / torch.exp(logvar_t) + logvar_t
+
+            loss = shared.sd_model.l_simple_weight * loss.mean()
+
+            loss_vlb = shared.sd_model.get_loss(model_output, target, mean=False).mean(dim=(1, 2, 3))
+            loss_vlb = (shared.sd_model.lvlb_weights[t] * loss_vlb).mean()
+            loss += (shared.sd_model.original_elbo_weight * loss_vlb)
+
+            if i % gr_epoch == 0 or i == learning_step:
+                print(f"\nIteration {i}, Loss: {loss.item()}")
+
+            return loss
+        
+        if gr_lrmodel == "Transformer":
+            optimizer.step(closure)
+        elif gr_lrmodel == "U-NET":
+            optimizer.step(denoise)
+        
+        
         scheduler.step()
 
         global stop_training
@@ -264,16 +341,31 @@ def gr_func(gr_text,gr_optimizer,gr_loss,gr_scheduler,gr_step,gr_layer,gr_late,g
 
     print("Training completed!")
     
-    need_save_embed(gr_name,input_tensor.squeeze(0),gr_nameow)
+    global stop_training_save
 
-    print("embedding save is finished!")
+    if stop_training_save:
+        need_save_embed(gr_name,input_tensor.squeeze(0),gr_nameow)
+
+        print("embedding save is finished!")
+    else:
+        stop_training_save = True
 
 
 stop_training = False
+stop_training_save = True
 
 def gr_interrupt_train():
     global stop_training 
+    global stop_training_save
     stop_training = True
+    stop_training_save = True
+
+def gr_interrupt_not_save_train():
+    global stop_training 
+    global stop_training_save
+    stop_training = True
+    stop_training_save = False
+
 
 def make_temp_embedding(name,vectors,cache):
     if name in cache:
@@ -347,4 +439,3 @@ def embedding_merge_dir():
     return merge_dir
 
 script_callbacks.on_ui_tabs(on_ui_tabs)
-
