@@ -1,445 +1,270 @@
-import modules.scripts as scripts
-import gradio as gr
+# adopted from
+# https://github.com/openai/improved-diffusion/blob/main/improved_diffusion/gaussian_diffusion.py
+# and
+# https://github.com/lucidrains/denoising-diffusion-pytorch/blob/7706bdfc6f527f58d33f84b7b522e61e6e3164b3/denoising_diffusion_pytorch/denoising_diffusion_pytorch.py
+# and
+# https://github.com/openai/guided-diffusion/blob/0ba878e517b276c45d1195eb29f6f5f72659a05b/guided_diffusion/nn.py
+#
+# thanks!
+
+
 import os
-import tqdm
+import math
 import torch
-from torch.optim import Adam, AdamW, SGD, Adadelta, Adagrad, SparseAdam, Adamax, ASGD, LBFGS, NAdam, RAdam, RMSprop, Rprop
-# from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts,OneCycleLR,CyclicLR,ReduceLROnPlateau,SequentialLR,ChainedScheduler,CosineAnnealingLR,PolynomialLR,ExponentialLR,LinearLR,ConstantLR,MultiStepLR,MultiStepLR,MultiplicativeLR,LambdaLR
-import torch.optim.lr_scheduler
-from torch.nn import L1Loss,MSELoss,CrossEntropyLoss,CTCLoss,NLLLoss,PoissonNLLLoss,GaussianNLLLoss,KLDivLoss,BCELoss,BCEWithLogitsLoss,MarginRankingLoss,HingeEmbeddingLoss,MultiLabelMarginLoss,HuberLoss,SmoothL1Loss,SoftMarginLoss,MultiLabelSoftMarginLoss,CosineEmbeddingLoss,MultiMarginLoss,TripletMarginLoss,TripletMarginWithDistanceLoss
+import torch.nn as nn
+import numpy as np
+from einops import repeat
 
-import modules
-from modules import devices, shared, script_callbacks, prompt_parser, sd_hijack
-from modules.textual_inversion.textual_inversion import Embedding
-from modules.shared import opts, cmd_opts
+from ldm.util import instantiate_from_config
 
-from ldm.util import default 
 
-from lion_pytorch import Lion
-from prodigyopt import Prodigy
-
-def on_ui_tabs():
-    with gr.Blocks(analytics_enabled=False) as ui_component:
-        with gr.Row():
-            gr_step = gr.Slider(
-                minimum=0,
-                maximum=150,
-                step=1,
-                value=20,
-                label="Steps"
-            ) 
-
-            gr_layer = gr.Slider(
-                minimum=1,
-                maximum=75,
-                step=1,
-                value=1,
-                label="tokens"
-            )
-
-            # TODO: add more UI components (cf. https://gradio.app/docs/#components)
-        with gr.Row():
-            gr_text = gr.Textbox(
-                value='', 
-                lines=4, 
-                max_lines=16, 
-                interactive=True, 
-                label='Your prompt'
-            )
-
-        with gr.Row():
-            gr_lrmodel = gr.Radio(
-                choices=["Transformer","U-NET"],
-                value="Transformer",
-                type="value",
-                label='Selects training part. Transformer is encoder process. U-NET is denoising process.'
-            )
-        
-        with gr.Row():
-            gr_late = gr.Number(
-                value = 0.0001,
-                maximum = 1.0,
-                minimum = 0.0,
-                label="learning_late"
-            )
-        with gr.Row():
-            gr_optimizer = gr.Dropdown(
-                choices=('Adam','AdamW','Lion','Prodigy','SGD','Adadelta','Adagrad','SparseAdam','Adamax','ASGD','LBFGS','NAdam','RAdam','RMSprop','Rprop'), 
-                value='Adam', 
-                type='value', 
-                interactive=True, 
-                label='Optimizer'
-            )
-
-            gr_loss = gr.Dropdown(
-                choices=('L1Loss','MSELoss','CrossEntropyLoss','CTCLoss','NLLLoss','PoissonNLLLoss','GaussianNLLLoss','KLDivLoss','BCELoss','BCEWithLogitsLoss','MarginRankingLoss','HingeEmbeddingLoss','MultiLabelMarginLoss','HuberLoss','SmoothL1Loss','SoftMarginLoss','MultiLabelSoftMarginLoss','CosineEmbeddingLoss','MultiMarginLoss','TripletMarginLoss','TripletMarginWithDistanceLoss'), 
-                value='MSELoss', 
-                type='value', 
-                interactive=True, 
-                label='loss'
-            )
-
-            gr_scheduler = gr.Dropdown(
-                choices=('CosineAnnealingWarmRestarts','OneCycleLR','CyclicLR','ReduceLROnPlateau','SequentialLR','ChainedScheduler','CosineAnnealingLR','PolynomialLR','ExponentialLR','LinearLR','ConstantLR','MultiStepLR','MultiStepLR','MultiplicativeLR','LambdaLR'), 
-                value='ConstantLR', 
-                type='value', 
-                interactive=True, 
-                label='scheduler'
-            )
-        
-        with gr.Row():
-            gr_lstep = gr.Number(
-                value = 100,
-                maximum = 100000,
-                minimum = 0,
-                label="learning_step"
-            )
-            gr_epoch = gr.Number(
-                value = 100,
-                maximum = 100000,
-                minimum = 0,
-                label="1 epoch in N step"
-            )
-
-        with gr.Row():
-            gr_init = gr.Textbox(
-                value='', 
-                lines=1, 
-                max_lines=1, 
-                interactive=True, 
-                label='initial prompt. (If blank, the initial value is random. If not blank, the number of LAYERS is automatically changed to the number of tokens in the input prompt.)'
-            )
-            gr_layerow = gr.Radio(
-                choices=["init_text","tokens"],
-                value="init_text",
-                type="index",
-                label='Selects the number of tokens used for embedding, either the specified number or the number set in init_text. '
-            ) 
-
-        with gr.Row():
-            gr_name = gr.Textbox(
-                value='', 
-                lines=1, 
-                max_lines=1, 
-                interactive=True, 
-                label='save embedding name'
-            )
-            gr_nameow = gr.Checkbox(
-                label='enable over write embedding'
-            ) 
-        
-        with gr.Row():
-            gr_button = gr.Button(
-                'Estimate!',
-                variant='primary'
-            )
-            gr_interrupt = gr.Button(
-                "Interrupt", 
-                elem_id="train_interrupt_preprocessing"
-            )
-            gr_interrupt_not_save = gr.Button(
-                "Interrupt (not save)", 
-                elem_id="train_interrupt_not_save_preprocessing"
-            )
-        
-        #interrupt training
-        gr_interrupt.click(
-            fn=gr_interrupt_train,
-            inputs=[],
-            outputs=[],
+def make_beta_schedule(schedule, n_timestep, linear_start=1e-4, linear_end=2e-2, cosine_s=8e-3):
+    if schedule == "linear":
+        betas = (
+                torch.linspace(linear_start ** 0.5, linear_end ** 0.5, n_timestep, dtype=torch.float64) ** 2
         )
 
-        gr_interrupt_not_save.click(
-            fn=gr_interrupt_not_save_train,
-            inputs=[],
-            outputs=[],
+    elif schedule == "cosine":
+        timesteps = (
+                torch.arange(n_timestep + 1, dtype=torch.float64) / n_timestep + cosine_s
         )
-        
-        # gr_button.click(fn=gr_func, inputs=[gr_name,gr_text,gr_optimizer,gr_true], outputs=[gr_html,gr_name,gr_text], show_progress=False)
-        gr_button.click(fn=gr_func, inputs=[gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_scheduler,gr_lstep,gr_epoch,gr_init,gr_layerow,gr_name,gr_nameow], show_progress=False)
+        alphas = timesteps / (1 + cosine_s) * np.pi / 2
+        alphas = torch.cos(alphas).pow(2)
+        alphas = alphas / alphas[0]
+        betas = 1 - alphas[1:] / alphas[:-1]
+        betas = np.clip(betas, a_min=0, a_max=0.999)
 
-    return [(ui_component, "Embedding Estimate", "extension_template_tab")]
-
-def gr_func(gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_scheduler,gr_lstep,gr_epoch,gr_init,gr_layerow,gr_name,gr_nameow):
-
-    if gr_name == '':
-        print("Please write save name")
-        return ''
-    
-    # 入力データの初期化（Nx768次元の配列）
-    if gr_init != '' and gr_init is not None:
-        clip = shared.sd_model.cond_stage_model
-
-        part = clip.tokenize_line(gr_init)
-
-        cnt = part[1]
-    
-        # trans = clip.encode_embedding_init_text(gr_init,cnt)
-
-        before_emb = None
-        all_vector = torch.zeros(cnt, 768).to(device=devices.device,dtype=torch.float32)
-
-        #　embeddingとtokenを分離と変換後、同位置で再結合
-        for count,emb in enumerate(part[0][0].fixes):
-            
-            vec = emb.embedding.vec
-            start = emb.offset
-            end = emb.embedding.vectors + start
-            name = emb.embedding.name
-
-            if count == 0: #初回処理
-                if start == 0:
-                    all_vector[start:end] = vec
-                else: #左に単語があればそれを代入
-                    all_vector[:start] = clip.encode_embedding_init_text(gr_init.split(name)[0],start-1)
-                    all_vector[start:end] = vec
-            else:
-                before_start = before_emb.offset
-                before_end = before_emb.embedding.vectors + before_start
-                before_name = before_emb.embedding.name
-                if start - before_end == 0: #間に単語がなければ今のembeddingだけを代入
-                    all_vector[start:end] = vec
-                else:
-                    between_words = gr_init.split(before_name, 1)[1].split(name, 1)[0]
-                    all_vector[before_end:start] = clip.encode_embedding_init_text(between_words,start-before_end)
-                    
-                    if count == len(part[0][0].fixes): #最終処理
-                        all_vector[start:end] = vec
-                        if end != cnt: #右に単語があればそれを代入
-                            all_vector[end:cnt] = clip.encode_embedding_init_text(gr_init.split(name)[1],cnt-end)
-
-            before_emb = emb 
-        
-        #for_end
-
-        if gr_layerow == 0:
-            gr_layer == cnt
-
-        input_tensor = all_vector[:gr_layer,:].unsqueeze(0).to(device=devices.device,dtype=torch.float32).requires_grad_(True)
-
+    elif schedule == "sqrt_linear":
+        betas = torch.linspace(linear_start, linear_end, n_timestep, dtype=torch.float64)
+    elif schedule == "sqrt":
+        betas = torch.linspace(linear_start, linear_end, n_timestep, dtype=torch.float64) ** 0.5
     else:
-        input_tensor = torch.randn(1, gr_layer, 768, requires_grad=True)  # 入力テンソルに勾配を追跡させる
+        raise ValueError(f"schedule '{schedule}' unknown.")
+    return betas.numpy()
 
 
-    # 関数に渡す引数（辞書）
-    optimizer_arg = {
-        'params':[input_tensor],
-        'lr': gr_late
-    }  
-    
-    # オプティマイザの選択
-    if gr_optimizer in globals():
-        optimizer_function = globals()[gr_optimizer]
-        optimizer = optimizer_function(**optimizer_arg)
+def make_ddim_timesteps(ddim_discr_method, num_ddim_timesteps, num_ddpm_timesteps, verbose=True):
+    if ddim_discr_method == 'uniform':
+        c = num_ddpm_timesteps // num_ddim_timesteps
+        ddim_timesteps = np.asarray(list(range(0, num_ddpm_timesteps, c)))
+    elif ddim_discr_method == 'quad':
+        ddim_timesteps = ((np.linspace(0, np.sqrt(num_ddpm_timesteps * .8), num_ddim_timesteps)) ** 2).astype(int)
     else:
-        print("The specified optimizer does not exist.")
-    
-    
-    # 損失関数の定義
-    if gr_loss in globals():
-        loss_function = globals()[gr_loss]
-        loss_fn = loss_function()
+        raise NotImplementedError(f'There is no ddim discretization method called "{ddim_discr_method}"')
+
+    # assert ddim_timesteps.shape[0] == num_ddim_timesteps
+    # add one to get the final alpha values right (the ones from first scale to data during sampling)
+    steps_out = ddim_timesteps + 1
+    if verbose:
+        print(f'Selected timesteps for ddim sampler: {steps_out}')
+    return steps_out
+
+
+def make_ddim_sampling_parameters(alphacums, ddim_timesteps, eta, verbose=True):
+    # select alphas for computing the variance schedule
+    alphas = alphacums[ddim_timesteps]
+    alphas_prev = np.asarray([alphacums[0]] + alphacums[ddim_timesteps[:-1]].tolist())
+
+    # according the the formula provided in https://arxiv.org/abs/2010.02502
+    sigmas = eta * np.sqrt((1 - alphas_prev) / (1 - alphas) * (1 - alphas / alphas_prev))
+    if verbose:
+        print(f'Selected alphas for ddim sampler: a_t: {alphas}; a_(t-1): {alphas_prev}')
+        print(f'For the chosen value of eta, which is {eta}, '
+              f'this results in the following sigma_t schedule for ddim sampler {sigmas}')
+    return sigmas, alphas, alphas_prev
+
+
+def betas_for_alpha_bar(num_diffusion_timesteps, alpha_bar, max_beta=0.999):
+    """
+    Create a beta schedule that discretizes the given alpha_t_bar function,
+    which defines the cumulative product of (1-beta) over time from t = [0,1].
+    :param num_diffusion_timesteps: the number of betas to produce.
+    :param alpha_bar: a lambda that takes an argument t from 0 to 1 and
+                      produces the cumulative product of (1-beta) up to that
+                      part of the diffusion process.
+    :param max_beta: the maximum beta to use; use values lower than 1 to
+                     prevent singularities.
+    """
+    betas = []
+    for i in range(num_diffusion_timesteps):
+        t1 = i / num_diffusion_timesteps
+        t2 = (i + 1) / num_diffusion_timesteps
+        betas.append(min(1 - alpha_bar(t2) / alpha_bar(t1), max_beta))
+    return np.array(betas)
+
+
+def extract_into_tensor(a, t, x_shape):
+    b, *_ = t.shape
+    out = a.gather(-1, t)
+    return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+
+
+def checkpoint(func, inputs, params, flag):
+    """
+    Evaluate a function without caching intermediate activations, allowing for
+    reduced memory at the expense of extra compute in the backward pass.
+    :param func: the function to evaluate.
+    :param inputs: the argument sequence to pass to `func`.
+    :param params: a sequence of parameters `func` depends on but does not
+                   explicitly take as arguments.
+    :param flag: if False, disable gradient checkpointing.
+    """
+    if flag:
+        args = tuple(inputs) + tuple(params)
+        return CheckpointFunction.apply(func, len(inputs), *args)
     else:
-        print("The specified loss_function does not exist.")
-    
+        return func(*inputs)
 
-    # 関数に渡す引数（辞書）
-    scheduler_arg = {
-        'optimizer':optimizer
-    }  
 
-    # スケジューラの選択
-    if gr_scheduler in dir(torch.optim.lr_scheduler):
-        # scheduler_function = globals()[gr_scheduler]
-        scheduler_function = getattr(torch.optim.lr_scheduler, gr_scheduler)
-        scheduler = scheduler_function(**scheduler_arg)        
-        if gr_optimizer == "Prodigy":
-            # n_epoch is the total number of epochs to train the network
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=gr_lstep/gr_epoch)
+class CheckpointFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, run_function, length, *args):
+        ctx.run_function = run_function
+        ctx.input_tensors = list(args[:length])
+        ctx.input_params = list(args[length:])
+        ctx.gpu_autocast_kwargs = {"enabled": torch.is_autocast_enabled(),
+                                   "dtype": torch.get_autocast_gpu_dtype(),
+                                   "cache_enabled": torch.is_autocast_cache_enabled()}
+        with torch.no_grad():
+            output_tensors = ctx.run_function(*ctx.input_tensors)
+        return output_tensors
+
+    @staticmethod
+    def backward(ctx, *output_grads):
+        ctx.input_tensors = [x.detach().requires_grad_(True) for x in ctx.input_tensors]
+        with torch.enable_grad(), \
+                torch.cuda.amp.autocast(**ctx.gpu_autocast_kwargs):
+            # Fixes a bug where the first op in run_function modifies the
+            # Tensor storage in place, which is not allowed for detach()'d
+            # Tensors.
+            shallow_copies = [x.view_as(x) for x in ctx.input_tensors]
+            output_tensors = ctx.run_function(*shallow_copies)
+        input_grads = torch.autograd.grad(
+            output_tensors,
+            ctx.input_tensors + ctx.input_params,
+            output_grads,
+            allow_unused=True,
+        )
+        del ctx.input_tensors
+        del ctx.input_params
+        del output_tensors
+        return (None, None) + input_grads
+
+
+def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):
+    """
+    Create sinusoidal timestep embeddings.
+    :param timesteps: a 1-D Tensor of N indices, one per batch element.
+                      These may be fractional.
+    :param dim: the dimension of the output.
+    :param max_period: controls the minimum frequency of the embeddings.
+    :return: an [N x dim] Tensor of positional embeddings.
+    """
+    if not repeat_only:
+        half = dim // 2
+        freqs = torch.exp(
+            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
+        ).to(device=timesteps.device)
+        args = timesteps[:, None].float() * freqs[None]
+        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        if dim % 2:
+            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
     else:
-        print("The specified Scheduler does not exist.")
-
-    # 目的出力
-    target_cond = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step)
-
-    EMBEDDING_NAME = 'embedding_estimate'
-    cache = {}
-    learning_step = int(gr_lstep)
-
-    start_pos:int = 1
-    end_pos:int = gr_layer + start_pos
-    
-    # 勾配降下法による最適化ループ
-    for i in tqdm.tqdm(range(learning_step)):
-        
-        optimizer.zero_grad()  # 勾配を初期化
-            
-        # 入力データからembedingを作成
-        make_temp_embedding(EMBEDDING_NAME,input_tensor.squeeze(0).to(device=devices.device,dtype=torch.float16),cache) #ある番号ごとに保存機能も後で追加か
-
-        cond = prompt_parser.get_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
-        # output = model.get_text_features(input_tensor)
-        
-        def closure():
-
-            # loss = loss_fn(output[0][0].cond, target_output[0][0].cond)  # 損失を計算
-            loss = loss_fn(cond[0][0].cond[start_pos:end_pos], target_cond[0][0].cond[start_pos:end_pos])  # 損失を計算
-            loss.backward()  # 勾配を計算
-
-            if i % gr_epoch == 0 or i == learning_step:
-                print(f"\nIteration {i}, Loss: {loss.item()}")
-            
-            return loss
-        
-        def denoise():
-            #stable-diffusion-webui_1.2.1\repositories\stable-diffusion-stability-ai\ldm\models\diffusion\ddpm.py
-            
-            shared.sd_model.to('cpu')
-            x_start = torch.randn(1,4,64,64)
-            shared.sd_model.register_schedule()
-            t = torch.randint(0, shared.sd_model.num_timesteps, (x_start.shape[0],), device='cpu').long()
-            
-            # noise = None
-            # noise = default(noise, lambda: torch.randn_like(x_start))
-
-            noise = torch.randn_like(x_start)
-            x_noisy = shared.sd_model.q_sample(x_start=x_start, t=t, noise=noise)
-            
-            c = cond[0][0].cond.to('cpu')
-            tc = target_cond[0][0].cond.to('cpu')
-
-            model_output = shared.sd_model.apply_model(x_noisy, t, c)
-            target = shared.sd_model.apply_model(x_noisy, t, tc)
-
-            loss_simple = shared.sd_model.get_loss(model_output, target, mean=False).mean([1, 2, 3])
-
-            
-            logvar_t = shared.sd_model.logvar[t]
-            loss = loss_simple / torch.exp(logvar_t) + logvar_t
-
-            loss = shared.sd_model.l_simple_weight * loss.mean()
-
-            loss_vlb = shared.sd_model.get_loss(model_output, target, mean=False).mean(dim=(1, 2, 3))
-            loss_vlb = (shared.sd_model.lvlb_weights[t] * loss_vlb).mean()
-            loss += (shared.sd_model.original_elbo_weight * loss_vlb)
-
-            if i % gr_epoch == 0 or i == learning_step:
-                print(f"\nIteration {i}, Loss: {loss.item()}")
-
-            return loss
-        
-        if gr_lrmodel == "Transformer":
-            optimizer.step(closure)
-        elif gr_lrmodel == "U-NET":
-            optimizer.step(denoise)
-        
-        
-        scheduler.step()
-
-        global stop_training
-        
-        if stop_training:
-            print("Interrupt training")
-            stop_training = False
-            break
-
-    print("Training completed!")
-    
-    global stop_training_save
-
-    if stop_training_save:
-        need_save_embed(gr_name,input_tensor.squeeze(0),gr_nameow)
-
-        print("embedding save is finished!")
-    else:
-        stop_training_save = True
-
-
-stop_training = False
-stop_training_save = True
-
-def gr_interrupt_train():
-    global stop_training 
-    global stop_training_save
-    stop_training = True
-    stop_training_save = True
-
-def gr_interrupt_not_save_train():
-    global stop_training 
-    global stop_training_save
-    stop_training = True
-    stop_training_save = False
-
-
-def make_temp_embedding(name,vectors,cache):
-    if name in cache:
-        embed = cache[name]
-    else:
-        embed = Embedding(vectors,name)
-        cache[name] = embed
-    embed.vec = vectors
-    embed.step = None
-    shape = vectors.size()
-    embed.vectors = shape[0]
-    embed.shape = shape[-1]
-    embed.cached_checksum = None
-    embed.filename = ''
-    register_embedding(name,embed)
-
-def register_embedding(name,embedding):
-    # /modules/textual_inversion/textual_inversion.py
-    self = modules.sd_hijack.model_hijack.embedding_db
-    model = shared.sd_model
-    try:
-        ids = model.cond_stage_model.tokenize([name])[0]
-        first_id = ids[0]
-    except:
-        return
-    if embedding is None:
-        if self.word_embeddings[name] is None:
-            return
-        del self.word_embeddings[name]
-    else:
-        self.word_embeddings[name] = embedding
-    if first_id not in self.ids_lookup:
-        if embedding is None:
-            return
-        self.ids_lookup[first_id] = []
-    save = [(ids, embedding)] if embedding is not None else []
-    old = [x for x in self.ids_lookup[first_id] if x[1].name!=name]
-    self.ids_lookup[first_id] = sorted(old + save, key=lambda x: len(x[0]), reverse=True)
+        embedding = repeat(timesteps, 'b -> b d', d=dim)
     return embedding
 
-merge_dir = None
-def need_save_embed(name,vectors,ow):
-    name = ''.join( x for x in name if (x.isalnum() or x in '._- ')).strip()
-    if name=='':
-        return name
-    try:
-        if type(vectors)==list:
-            vectors = torch.cat([r[0] for r in vectors])
-        file = modules.textual_inversion.textual_inversion.create_embedding('_EmbeddingMerge_temp',vectors.size(0),ow,init_text='')
-        pt = torch.load(file,map_location='cpu')
-        token = list(pt['string_to_param'].keys())[0]
-        pt['string_to_param'][token] = vectors.cpu()
-        torch.save(pt,file)
-        merge_dir = embedding_merge_dir()
-        target = os.path.join(merge_dir,name+'.pt')
-        os.replace(file,target)
-        modules.sd_hijack.model_hijack.embedding_db.load_textual_inversion_embeddings()
-        return ''
-    except:
-        # traceback.print_exc()
-        return name
 
-def embedding_merge_dir():
-    try:
-        merge_dir = os.path.join(cmd_opts.embeddings_dir,'embedding_estimate')
-        modules.sd_hijack.model_hijack.embedding_db.add_embedding_dir(merge_dir)
-        os.makedirs(merge_dir)
-    except:
-        pass
+def zero_module(module):
+    """
+    Zero out the parameters of a module and return it.
+    """
+    for p in module.parameters():
+        p.detach().zero_()
+    return module
 
-    return merge_dir
 
-script_callbacks.on_ui_tabs(on_ui_tabs)
+def scale_module(module, scale):
+    """
+    Scale the parameters of a module and return it.
+    """
+    for p in module.parameters():
+        p.detach().mul_(scale)
+    return module
+
+
+def mean_flat(tensor):
+    """
+    Take the mean over all non-batch dimensions.
+    """
+    return tensor.mean(dim=list(range(1, len(tensor.shape))))
+
+
+def normalization(channels):
+    """
+    Make a standard normalization layer.
+    :param channels: number of input channels.
+    :return: an nn.Module for normalization.
+    """
+    return GroupNorm32(32, channels)
+
+
+# PyTorch 1.7 has SiLU, but we support PyTorch 1.5.
+class SiLU(nn.Module):
+    def forward(self, x):
+        return x * torch.sigmoid(x)
+
+
+class GroupNorm32(nn.GroupNorm):
+    def forward(self, x):
+        return super().forward(x.float()).type(x.dtype)
+
+def conv_nd(dims, *args, **kwargs):
+    """
+    Create a 1D, 2D, or 3D convolution module.
+    """
+    if dims == 1:
+        return nn.Conv1d(*args, **kwargs)
+    elif dims == 2:
+        return nn.Conv2d(*args, **kwargs)
+    elif dims == 3:
+        return nn.Conv3d(*args, **kwargs)
+    raise ValueError(f"unsupported dimensions: {dims}")
+
+
+def linear(*args, **kwargs):
+    """
+    Create a linear module.
+    """
+    return nn.Linear(*args, **kwargs)
+
+
+def avg_pool_nd(dims, *args, **kwargs):
+    """
+    Create a 1D, 2D, or 3D average pooling module.
+    """
+    if dims == 1:
+        return nn.AvgPool1d(*args, **kwargs)
+    elif dims == 2:
+        return nn.AvgPool2d(*args, **kwargs)
+    elif dims == 3:
+        return nn.AvgPool3d(*args, **kwargs)
+    raise ValueError(f"unsupported dimensions: {dims}")
+
+
+class HybridConditioner(nn.Module):
+
+    def __init__(self, c_concat_config, c_crossattn_config):
+        super().__init__()
+        self.concat_conditioner = instantiate_from_config(c_concat_config)
+        self.crossattn_conditioner = instantiate_from_config(c_crossattn_config)
+
+    def forward(self, c_concat, c_crossattn):
+        c_concat = self.concat_conditioner(c_concat)
+        c_crossattn = self.crossattn_conditioner(c_crossattn)
+        return {'c_concat': [c_concat], 'c_crossattn': [c_crossattn]}
+
+
+def noise_like(shape, device, repeat=False):
+    repeat_noise = lambda: torch.randn((1, *shape[1:]), device=device).repeat(shape[0], *((1,) * (len(shape) - 1)))
+    noise = lambda: torch.randn(shape, device=device)
+    return repeat_noise() if repeat else noise()
