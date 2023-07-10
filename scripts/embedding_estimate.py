@@ -294,23 +294,27 @@ def gr_func(gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_
         def denoise():
             #stable-diffusion-webui_1.2.1\repositories\stable-diffusion-stability-ai\ldm\models\diffusion\ddpm.py
             
-            x_start = torch.randn(1,4,64,64).to(device=devices.device)
+            shared.sd_model.to('cpu')
+            x_start = torch.randn(1,4,64,64)
             shared.sd_model.register_schedule()
-            t = torch.randint(0, shared.sd_model.num_timesteps, (x_start.shape[0],), device=shared.device).long()
+            t = torch.randint(0, shared.sd_model.num_timesteps, (x_start.shape[0],), device='cpu').long()
             
             # noise = None
             # noise = default(noise, lambda: torch.randn_like(x_start))
 
-            noise = torch.randn_like(x_start).to(device=devices.device)
+            noise = torch.randn_like(x_start)
             x_noisy = shared.sd_model.q_sample(x_start=x_start, t=t, noise=noise)
+            
+            c = cond[0][0].cond.to('cpu')
+            tc = target_cond[0][0].cond.to('cpu')
 
-            model_output = shared.sd_model.apply_model(x_noisy, t, cond[0][0].cond)
-            target = shared.sd_model.apply_model(x_noisy, t, target_cond[0][0].cond)
+            model_output = shared.sd_model.apply_model(x_noisy, t, c)
+            target = shared.sd_model.apply_model(x_noisy, t, tc)
 
             loss_simple = shared.sd_model.get_loss(model_output, target, mean=False).mean([1, 2, 3])
 
             
-            logvar_t = shared.sd_model.logvar[t].to(shared.sd_model.device)
+            logvar_t = shared.sd_model.logvar[t]
             loss = loss_simple / torch.exp(logvar_t) + logvar_t
 
             loss = shared.sd_model.l_simple_weight * loss.mean()
