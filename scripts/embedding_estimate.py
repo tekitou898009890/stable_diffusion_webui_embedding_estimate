@@ -1,6 +1,8 @@
 import modules.scripts as scripts
 import gradio as gr
 import os
+import sys
+import traceback
 import tqdm
 import torch
 from torch.optim import Adam, AdamW, SGD, Adadelta, Adagrad, SparseAdam, Adamax, ASGD, LBFGS, NAdam, RAdam, RMSprop, Rprop
@@ -162,197 +164,216 @@ def on_ui_tabs():
 
 def gr_func(gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_scheduler,gr_lstep,gr_epoch,gr_init,gr_layerow,gr_name,gr_nameow):
 
-    if gr_name == '':
-        print("Please write save name")
-        return ''
-    
-    # 入力データの初期化（Nx768次元の配列）
-    if gr_init != '' and gr_init is not None:
-        clip = shared.sd_model.cond_stage_model
+    try:
 
-        part = clip.tokenize_line(gr_init)
+        if gr_name == '':
+            print("Please write save name")
+            return ''
+        
+        shared.sd_model.to(device=devices.device)
 
-        cnt = part[1]
-    
-        # trans = clip.encode_embedding_init_text(gr_init,cnt)
+        old_parallel_processing_allowed = shared.parallel_processing_allowed
+        
+        # 入力データの初期化（Nx768次元の配列）
+        if gr_init != '' and gr_init is not None:
+            clip = shared.sd_model.cond_stage_model
 
-        before_emb = None
-        all_vector = torch.zeros(cnt, 768).to(device=devices.device,dtype=torch.float32)
+            part = clip.tokenize_line(gr_init)
 
-        #　embeddingとtokenを分離と変換後、同位置で再結合
-        for count,emb in enumerate(part[0][0].fixes):
-            
-            vec = emb.embedding.vec
-            start = emb.offset
-            end = emb.embedding.vectors + start
-            name = emb.embedding.name
+            cnt = part[1]
+        
+            # trans = clip.encode_embedding_init_text(gr_init,cnt)
 
-            if count == 0: #初回処理
-                if start == 0:
-                    all_vector[start:end] = vec
-                else: #左に単語があればそれを代入
-                    all_vector[:start] = clip.encode_embedding_init_text(gr_init.split(name)[0],start-1)
-                    all_vector[start:end] = vec
-            else:
-                before_start = before_emb.offset
-                before_end = before_emb.embedding.vectors + before_start
-                before_name = before_emb.embedding.name
-                if start - before_end == 0: #間に単語がなければ今のembeddingだけを代入
-                    all_vector[start:end] = vec
-                else:
-                    between_words = gr_init.split(before_name, 1)[1].split(name, 1)[0]
-                    all_vector[before_end:start] = clip.encode_embedding_init_text(between_words,start-before_end)
-                    
-                    if count == len(part[0][0].fixes): #最終処理
+            before_emb = None
+            all_vector = torch.zeros(cnt, 768).to(device=devices.device,dtype=torch.float32)
+
+            #　embeddingとtokenを分離と変換後、同位置で再結合
+            for count,emb in enumerate(part[0][0].fixes):
+                
+                vec = emb.embedding.vec
+                start = emb.offset
+                end = emb.embedding.vectors + start
+                name = emb.embedding.name
+
+                if count == 0: #初回処理
+                    if start == 0:
                         all_vector[start:end] = vec
-                        if end != cnt: #右に単語があればそれを代入
-                            all_vector[end:cnt] = clip.encode_embedding_init_text(gr_init.split(name)[1],cnt-end)
+                    else: #左に単語があればそれを代入
+                        all_vector[:start] = clip.encode_embedding_init_text(gr_init.split(name)[0],start-1)
+                        all_vector[start:end] = vec
+                else:
+                    before_start = before_emb.offset
+                    before_end = before_emb.embedding.vectors + before_start
+                    before_name = before_emb.embedding.name
+                    if start - before_end == 0: #間に単語がなければ今のembeddingだけを代入
+                        all_vector[start:end] = vec
+                    else:
+                        between_words = gr_init.split(before_name, 1)[1].split(name, 1)[0]
+                        all_vector[before_end:start] = clip.encode_embedding_init_text(between_words,start-before_end)
+                        
+                        if count == len(part[0][0].fixes): #最終処理
+                            all_vector[start:end] = vec
+                            if end != cnt: #右に単語があればそれを代入
+                                all_vector[end:cnt] = clip.encode_embedding_init_text(gr_init.split(name)[1],cnt-end)
 
-            before_emb = emb 
-        
-        #for_end
-
-        if gr_layerow == 0:
-            gr_layer == cnt
-
-        input_tensor = all_vector[:gr_layer,:].unsqueeze(0).to(device=devices.device,dtype=torch.float32).requires_grad_(True)
-
-    else:
-        input_tensor = torch.randn(1, gr_layer, 768, requires_grad=True)  # 入力テンソルに勾配を追跡させる
-
-
-    # 関数に渡す引数（辞書）
-    optimizer_arg = {
-        'params':[input_tensor],
-        'lr': gr_late
-    }  
-    
-    # オプティマイザの選択
-    if gr_optimizer in globals():
-        optimizer_function = globals()[gr_optimizer]
-        optimizer = optimizer_function(**optimizer_arg)
-    else:
-        print("The specified optimizer does not exist.")
-    
-    
-    # 損失関数の定義
-    if gr_loss in globals():
-        loss_function = globals()[gr_loss]
-        loss_fn = loss_function()
-    else:
-        print("The specified loss_function does not exist.")
-    
-
-    # 関数に渡す引数（辞書）
-    scheduler_arg = {
-        'optimizer':optimizer
-    }  
-
-    # スケジューラの選択
-    if gr_scheduler in dir(torch.optim.lr_scheduler):
-        # scheduler_function = globals()[gr_scheduler]
-        scheduler_function = getattr(torch.optim.lr_scheduler, gr_scheduler)
-        scheduler = scheduler_function(**scheduler_arg)        
-        if gr_optimizer == "Prodigy":
-            # n_epoch is the total number of epochs to train the network
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=gr_lstep/gr_epoch)
-    else:
-        print("The specified Scheduler does not exist.")
-
-    # 目的出力
-    target_cond = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step)
-
-    EMBEDDING_NAME = 'embedding_estimate'
-    cache = {}
-    learning_step = int(gr_lstep)
-
-    start_pos:int = 1
-    end_pos:int = gr_layer + start_pos
-    
-    # 勾配降下法による最適化ループ
-    for i in tqdm.tqdm(range(learning_step)):
-        
-        optimizer.zero_grad()  # 勾配を初期化
+                before_emb = emb 
             
-        # 入力データからembedingを作成
-        make_temp_embedding(EMBEDDING_NAME,input_tensor.squeeze(0).to(device=devices.device,dtype=torch.float16),cache) #ある番号ごとに保存機能も後で追加か
+            #for_end
 
-        cond = prompt_parser.get_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
-        # output = model.get_text_features(input_tensor)
+            if gr_layerow == 0:
+                gr_layer == cnt
+
+            input_tensor = all_vector[:gr_layer,:].unsqueeze(0).to(device=devices.device,dtype=torch.float32).requires_grad_(True)
+
+        else:
+            input_tensor = torch.randn(1, gr_layer, 768, requires_grad=True)  # 入力テンソルに勾配を追跡させる
+
+
+        # 関数に渡す引数（辞書）
+        optimizer_arg = {
+            'params':[input_tensor],
+            'lr': gr_late
+        }  
         
-        def closure():
+        # オプティマイザの選択
+        if gr_optimizer in globals():
+            optimizer_function = globals()[gr_optimizer]
+            optimizer = optimizer_function(**optimizer_arg)
+        else:
+            print("The specified optimizer does not exist.")
+        
+        
+        # 損失関数の定義
+        if gr_loss in globals():
+            loss_function = globals()[gr_loss]
+            loss_fn = loss_function()
+        else:
+            print("The specified loss_function does not exist.")
+        
 
-            # loss = loss_fn(output[0][0].cond, target_output[0][0].cond)  # 損失を計算
-            loss = loss_fn(cond[0][0].cond[start_pos:end_pos], target_cond[0][0].cond[start_pos:end_pos])  # 損失を計算
-            loss.backward()  # 勾配を計算
+        # 関数に渡す引数（辞書）
+        scheduler_arg = {
+            'optimizer':optimizer
+        }  
 
-            if i % gr_epoch == 0 or i == learning_step:
-                print(f"\nIteration {i}, Loss: {loss.item()}")
+        # スケジューラの選択
+        if gr_scheduler in dir(torch.optim.lr_scheduler):
+            # scheduler_function = globals()[gr_scheduler]
+            scheduler_function = getattr(torch.optim.lr_scheduler, gr_scheduler)
+            scheduler = scheduler_function(**scheduler_arg)        
+            if gr_optimizer == "Prodigy":
+                # n_epoch is the total number of epochs to train the network
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=gr_lstep/gr_epoch)
+        else:
+            print("The specified Scheduler does not exist.")
+
+        # 目的出力
+        target_cond = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step)
+
+        EMBEDDING_NAME = 'embedding_estimate'
+        cache = {}
+        learning_step = int(gr_lstep)
+
+        start_pos:int = 1
+        end_pos:int = gr_layer + start_pos
+
+        # 勾配降下法による最適化ループ
+        for i in tqdm.tqdm(range(learning_step)):
             
-            return loss
-        
-        def denoise():
-            #stable-diffusion-webui_1.2.1\repositories\stable-diffusion-stability-ai\ldm\models\diffusion\ddpm.py
+            optimizer.zero_grad()  # 勾配を初期化
+                
+            # 入力データからembedingを作成
+            make_temp_embedding(EMBEDDING_NAME,input_tensor.squeeze(0).to(device=devices.device,dtype=torch.float16),cache) #ある番号ごとに保存機能も後で追加か
+
+            cond = prompt_parser.get_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
+            # output = model.get_text_features(input_tensor)
             
-            shared.sd_model.to('cpu')
-            x_start = torch.randn(1,4,64,64)
-            shared.sd_model.register_schedule()
-            t = torch.randint(0, shared.sd_model.num_timesteps, (x_start.shape[0],), device='cpu').long()
+            def closure():
+
+                # loss = loss_fn(output[0][0].cond, target_output[0][0].cond)  # 損失を計算
+                loss = loss_fn(cond[0][0].cond[start_pos:end_pos], target_cond[0][0].cond[start_pos:end_pos])  # 損失を計算
+                loss.backward()  # 勾配を計算
+
+                if i % gr_epoch == 0 or i == learning_step:
+                    print(f"\nIteration {i}, Loss: {loss.item()}")
+                
+                return loss
             
-            # noise = None
-            # noise = default(noise, lambda: torch.randn_like(x_start))
+            def denoise():
+                #stable-diffusion-webui_1.2.1\repositories\stable-diffusion-stability-ai\ldm\models\diffusion\ddpm.py
 
-            noise = torch.randn_like(x_start)
-            x_noisy = shared.sd_model.q_sample(x_start=x_start, t=t, noise=noise)
+                with devices.autocast():
+                
+                    shared.parallel_processing_allowed = False
+
+                    x_start = torch.randn(1,4,64,64).to(devices.device)
+                    shared.sd_model.register_schedule()
+                    t = torch.randint(0, shared.sd_model.num_timesteps, (x_start.shape[0], ), device=devices.device).long()
+                    
+                    # noise = None
+                    # noise = default(noise, lambda: torch.randn_like(x_start))
+
+                    noise = torch.randn_like(x_start).to(devices.device)
+                    x_noisy = shared.sd_model.q_sample(x_start=x_start.to(devices.cpu), t=t.to(devices.cpu), noise=noise.to(devices.cpu)).to(devices.device)
+                    
+                    # unsqueeze(0)で[77,768] -> [1,77,768]しないとConv2Dのとこで3次元のところが2次元しかないというエラーが出る。
+                    c = cond[0][0].cond.unsqueeze(0)
+                    tc = target_cond[0][0].cond.unsqueeze(0)
+
+                    model_output = shared.sd_model.apply_model(x_noisy, t, c)
+                    target = shared.sd_model.apply_model(x_noisy, t, tc)
+
+                    loss_simple = shared.sd_model.get_loss(model_output, target, mean=False).mean([1, 2, 3])
+                    
+                    logvar_t = shared.sd_model.logvar[t]
+                    loss = loss_simple / torch.exp(logvar_t) + logvar_t
+
+                    loss = shared.sd_model.l_simple_weight * loss.mean()
+
+                    loss_vlb = shared.sd_model.get_loss(model_output, target, mean=False).mean(dim=(1, 2, 3))
+                    loss_lvlb_weights = shared.sd_model.lvlb_weights.to(devices.device)
+                    loss_vlb = (loss_lvlb_weights[t] * loss_vlb).mean()
+                    loss += (shared.sd_model.original_elbo_weight * loss_vlb)
+
+                    loss.backward()  # 勾配を計算
+
+                if i % gr_epoch == 0 or i == learning_step:
+                    print(f"\nIteration {i}, Loss: {loss.item()}")
+
+                return loss
             
-            c = cond[0][0].cond.to('cpu')
-            tc = target_cond[0][0].cond.to('cpu')
-
-            model_output = shared.sd_model.apply_model(x_noisy, t, c)
-            target = shared.sd_model.apply_model(x_noisy, t, tc)
-
-            loss_simple = shared.sd_model.get_loss(model_output, target, mean=False).mean([1, 2, 3])
-
+            if gr_lrmodel == "Transformer":
+                optimizer.step(closure)
+            elif gr_lrmodel == "U-NET":
+                optimizer.step(denoise)
             
-            logvar_t = shared.sd_model.logvar[t]
-            loss = loss_simple / torch.exp(logvar_t) + logvar_t
+            
+            scheduler.step()
 
-            loss = shared.sd_model.l_simple_weight * loss.mean()
+            global stop_training
+            
+            if stop_training:
+                print("Interrupt training")
+                stop_training = False
+                break
 
-            loss_vlb = shared.sd_model.get_loss(model_output, target, mean=False).mean(dim=(1, 2, 3))
-            loss_vlb = (shared.sd_model.lvlb_weights[t] * loss_vlb).mean()
-            loss += (shared.sd_model.original_elbo_weight * loss_vlb)
-
-            if i % gr_epoch == 0 or i == learning_step:
-                print(f"\nIteration {i}, Loss: {loss.item()}")
-
-            return loss
+        print("Training completed!")
         
-        if gr_lrmodel == "Transformer":
-            optimizer.step(closure)
-        elif gr_lrmodel == "U-NET":
-            optimizer.step(denoise)
-        
-        
-        scheduler.step()
+        global stop_training_save
 
-        global stop_training
-        
-        if stop_training:
-            print("Interrupt training")
-            stop_training = False
-            break
+        if stop_training_save:
+            need_save_embed(gr_name,input_tensor.squeeze(0),gr_nameow)
 
-    print("Training completed!")
+            print("embedding save is finished!")
+        else:
+            stop_training_save = True
     
-    global stop_training_save
-
-    if stop_training_save:
-        need_save_embed(gr_name,input_tensor.squeeze(0),gr_nameow)
-
-        print("embedding save is finished!")
-    else:
-        stop_training_save = True
+    except Exception:
+        print(traceback.format_exc(), file=sys.stderr)
+        pass
+    finally:
+        shared.sd_model.to(devices.device)
+        shared.parallel_processing_allowed = old_parallel_processing_allowed
 
 
 stop_training = False
