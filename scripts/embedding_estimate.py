@@ -301,39 +301,41 @@ def gr_func(gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_
             
             def denoise():
                 #stable-diffusion-webui_1.2.1\repositories\stable-diffusion-stability-ai\ldm\models\diffusion\ddpm.py
+
+                with devices.autocast():
                 
-                shared.sd_model.to(device='cpu',dtype=torch.float32)
-                shared.parallel_processing_allowed = False
+                    shared.parallel_processing_allowed = False
 
-                x_start = torch.randn(1,4,64,64)
-                shared.sd_model.register_schedule()
-                t = torch.randint(0, shared.sd_model.num_timesteps, (x_start.shape[0], ), device='cpu').long()
-                
-                # noise = None
-                # noise = default(noise, lambda: torch.randn_like(x_start))
+                    x_start = torch.randn(1,4,64,64).to(devices.device)
+                    shared.sd_model.register_schedule()
+                    t = torch.randint(0, shared.sd_model.num_timesteps, (x_start.shape[0], ), device=devices.device).long()
+                    
+                    # noise = None
+                    # noise = default(noise, lambda: torch.randn_like(x_start))
 
-                noise = torch.randn_like(x_start)
-                x_noisy = shared.sd_model.q_sample(x_start=x_start, t=t, noise=noise).to('cpu',dtype=torch.float32)
-                
-                c = cond[0][0].cond.to('cpu',dtype=torch.float32)
-                tc = target_cond[0][0].cond.to('cpu',dtype=torch.float32)
+                    noise = torch.randn_like(x_start).to(devices.device)
+                    x_noisy = shared.sd_model.q_sample(x_start=x_start.to(devices.cpu), t=t.to(devices.cpu), noise=noise.to(devices.cpu)).to(devices.device)
+                    
+                    # unsqueeze(0)で[77,768] -> [1,77,768]しないとConv2Dのとこで3次元のところが2次元しかないというエラーが出る。
+                    c = cond[0][0].cond.unsqueeze(0)
+                    tc = target_cond[0][0].cond.unsqueeze(0)
 
-                model_output = shared.sd_model.apply_model(x_noisy, t, c)
-                target = shared.sd_model.apply_model(x_noisy, t, tc)
+                    model_output = shared.sd_model.apply_model(x_noisy, t, c)
+                    target = shared.sd_model.apply_model(x_noisy, t, tc)
 
-                loss_simple = shared.sd_model.get_loss(model_output, target, mean=False).mean([1, 2, 3])
+                    loss_simple = shared.sd_model.get_loss(model_output, target, mean=False).mean([1, 2, 3])
+                    
+                    logvar_t = shared.sd_model.logvar[t]
+                    loss = loss_simple / torch.exp(logvar_t) + logvar_t
 
-                
-                logvar_t = shared.sd_model.logvar[t]
-                loss = loss_simple / torch.exp(logvar_t) + logvar_t
+                    loss = shared.sd_model.l_simple_weight * loss.mean()
 
-                loss = shared.sd_model.l_simple_weight * loss.mean()
+                    loss_vlb = shared.sd_model.get_loss(model_output, target, mean=False).mean(dim=(1, 2, 3))
+                    loss_lvlb_weights = shared.sd_model.lvlb_weights.to(devices.device)
+                    loss_vlb = (loss_lvlb_weights[t] * loss_vlb).mean()
+                    loss += (shared.sd_model.original_elbo_weight * loss_vlb)
 
-                loss_vlb = shared.sd_model.get_loss(model_output, target, mean=False).mean(dim=(1, 2, 3))
-                loss_vlb = (shared.sd_model.lvlb_weights[t] * loss_vlb).mean()
-                loss += (shared.sd_model.original_elbo_weight * loss_vlb)
-
-                shared.sd_model.to(devices.device)
+                    loss.backward()  # 勾配を計算
 
                 if i % gr_epoch == 0 or i == learning_step:
                     print(f"\nIteration {i}, Loss: {loss.item()}")
