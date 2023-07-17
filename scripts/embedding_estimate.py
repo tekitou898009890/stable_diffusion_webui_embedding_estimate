@@ -2,6 +2,7 @@ import modules.scripts as scripts
 import gradio as gr
 import os
 import sys
+import random
 import traceback
 import tqdm
 import torch
@@ -15,13 +16,25 @@ from modules import devices, shared, script_callbacks, prompt_parser, sd_hijack
 from modules.textual_inversion.textual_inversion import Embedding
 from modules.shared import opts, cmd_opts
 
-from ldm.util import default 
-
 from lion_pytorch import Lion
 from prodigyopt import Prodigy
 
+from scripts.sampler import sample_dpmpp_sde
+from scripts.embedding import make_temp_embedding, get_conds_with_caching
+import k_diffusion
+from modules.sd_samplers_kdiffusion import CFGDenoiser
+
 def on_ui_tabs():
     with gr.Blocks(analytics_enabled=False) as ui_component:
+        
+        with gr.Row():
+            gr_ptype = gr.Radio(
+                choices=["Prompts","Negative_Prompts"],
+                value="Prompts",
+                type="value",
+                label='Selects training type .'
+            )
+        
         with gr.Row():
             gr_step = gr.Slider(
                 minimum=0,
@@ -158,11 +171,11 @@ def on_ui_tabs():
         )
         
         # gr_button.click(fn=gr_func, inputs=[gr_name,gr_text,gr_optimizer,gr_true], outputs=[gr_html,gr_name,gr_text], show_progress=False)
-        gr_button.click(fn=gr_func, inputs=[gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_scheduler,gr_lstep,gr_epoch,gr_init,gr_layerow,gr_name,gr_nameow], show_progress=False)
+        gr_button.click(fn=gr_func, inputs=[gr_ptype,gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_scheduler,gr_lstep,gr_epoch,gr_init,gr_layerow,gr_name,gr_nameow], show_progress=False)
 
     return [(ui_component, "Embedding Estimate", "extension_template_tab")]
 
-def gr_func(gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_scheduler,gr_lstep,gr_epoch,gr_init,gr_layerow,gr_name,gr_nameow):
+def gr_func(gr_ptype,gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_scheduler,gr_lstep,gr_epoch,gr_init,gr_layerow,gr_name,gr_nameow):
 
     try:
 
@@ -187,36 +200,40 @@ def gr_func(gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_
             before_emb = None
             all_vector = torch.zeros(cnt, 768).to(device=devices.device,dtype=torch.float32)
 
-            #　embeddingとtokenを分離と変換後、同位置で再結合
-            for count,emb in enumerate(part[0][0].fixes):
-                
-                vec = emb.embedding.vec
-                start = emb.offset
-                end = emb.embedding.vectors + start
-                name = emb.embedding.name
+            if len(part[0][0].fixes) == 0:
+                all_vector = clip.encode_embedding_init_text(gr_init,cnt)
 
-                if count == 0: #初回処理
-                    if start == 0:
-                        all_vector[start:end] = vec
-                    else: #左に単語があればそれを代入
-                        all_vector[:start] = clip.encode_embedding_init_text(gr_init.split(name)[0],start-1)
-                        all_vector[start:end] = vec
-                else:
-                    before_start = before_emb.offset
-                    before_end = before_emb.embedding.vectors + before_start
-                    before_name = before_emb.embedding.name
-                    if start - before_end == 0: #間に単語がなければ今のembeddingだけを代入
-                        all_vector[start:end] = vec
-                    else:
-                        between_words = gr_init.split(before_name, 1)[1].split(name, 1)[0]
-                        all_vector[before_end:start] = clip.encode_embedding_init_text(between_words,start-before_end)
-                        
-                        if count == len(part[0][0].fixes): #最終処理
+            else:
+                #　embeddingとtokenを分離と変換後、同位置で再結合
+                for count,emb in enumerate(part[0][0].fixes):
+                    
+                    vec = emb.embedding.vec
+                    start = emb.offset
+                    end = emb.embedding.vectors + start
+                    name = emb.embedding.name
+
+                    if count == 0: #初回処理
+                        if start == 0:
                             all_vector[start:end] = vec
-                            if end != cnt: #右に単語があればそれを代入
-                                all_vector[end:cnt] = clip.encode_embedding_init_text(gr_init.split(name)[1],cnt-end)
+                        else: #左に単語があればそれを代入
+                            all_vector[:start] = clip.encode_embedding_init_text(gr_init.split(name)[0],start-1)
+                            all_vector[start:end] = vec
+                    else:
+                        before_start = before_emb.offset
+                        before_end = before_emb.embedding.vectors + before_start
+                        before_name = before_emb.embedding.name
+                        if start - before_end == 0: #間に単語がなければ今のembeddingだけを代入
+                            all_vector[start:end] = vec
+                        else:
+                            between_words = gr_init.split(before_name, 1)[1].split(name, 1)[0]
+                            all_vector[before_end:start] = clip.encode_embedding_init_text(between_words,start-before_end)
+                            
+                            if count == len(part[0][0].fixes): #最終処理
+                                all_vector[start:end] = vec
+                                if end != cnt: #右に単語があればそれを代入
+                                    all_vector[end:cnt] = clip.encode_embedding_init_text(gr_init.split(name)[1],cnt-end)
 
-                before_emb = emb 
+                    before_emb = emb 
             
             #for_end
 
@@ -267,28 +284,54 @@ def gr_func(gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_
         else:
             print("The specified Scheduler does not exist.")
 
-        # 目的出力
-        target_cond = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step)
 
-        EMBEDDING_NAME = 'embedding_estimate'
+        
         cache = {}
         learning_step = int(gr_lstep)
 
         start_pos:int = 1
         end_pos:int = gr_layer + start_pos
 
+        uc_cache = [None,None]       
+
+
         # 勾配降下法による最適化ループ
         for i in tqdm.tqdm(range(learning_step)):
-            
-            optimizer.zero_grad()  # 勾配を初期化
-                
-            # 入力データからembedingを作成
-            make_temp_embedding(EMBEDDING_NAME,input_tensor.squeeze(0).to(device=devices.device,dtype=torch.float16),cache) #ある番号ごとに保存機能も後で追加か
 
-            cond = prompt_parser.get_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
+            EMBEDDING_NAME = 'embedding_estimate'
+
+            step_multiplier = 2 # for DPM
+                
+            
+            with devices.autocast():
+                # 目的出力
+                if gr_lrmodel == "Transformer":
+                    target_cond = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step * step_multiplier)
+                else:
+                    if gr_ptype == "Prompt":
+                        target_cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [gr_text], gr_step * step_multiplier)
+                        empty_prompt = get_conds_with_caching(prompt_parser.get_learned_conditioning, [''], gr_step * step_multiplier,uc_cache)
+                    else:
+                        target_cond = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step * step_multiplier)
+                        empty_prompt = get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, [''], gr_step * step_multiplier,uc_cache)
+                
+                # 出力
+
+                x_original = torch.randn(1,4,64,64).to(devices.device)
+
+                seed_original = random.randrange(4294967294) # 2^32
+
+                tc = target_cond if gr_ptype == "Prompts" else empty_prompt
+                tuc = empty_prompt if gr_ptype == "Prompts" else target_cond
+
+                xo = get_kdiffusion_samples(x_original,gr_step,tc,tuc,7,seed_original,optimizer,loss_fn,input_tensor)
+
+            
             # output = model.get_text_features(input_tensor)
             
             def closure():
+
+                cond = prompt_parser.get_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
 
                 # loss = loss_fn(output[0][0].cond, target_output[0][0].cond)  # 損失を計算
                 loss = loss_fn(cond[0][0].cond[start_pos:end_pos], target_cond[0][0].cond[start_pos:end_pos])  # 損失を計算
@@ -302,11 +345,14 @@ def gr_func(gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_
             def denoise():
                 #stable-diffusion-webui_1.2.1\repositories\stable-diffusion-stability-ai\ldm\models\diffusion\ddpm.py
 
+                optimizer.zero_grad()  # 勾配を初期化
+
                 with devices.autocast():
                 
                     shared.parallel_processing_allowed = False
 
-                    x_start = torch.randn(1,4,64,64).to(devices.device)
+                    x_start = x_original
+                    # x_start = torch.randn(1,4,64,64).to(devices.device)
                     shared.sd_model.register_schedule()
                     t = torch.randint(0, shared.sd_model.num_timesteps, (x_start.shape[0], ), device=devices.device).long()
                     
@@ -317,27 +363,48 @@ def gr_func(gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_
                     x_noisy = shared.sd_model.q_sample(x_start=x_start.to(devices.cpu), t=t.to(devices.cpu), noise=noise.to(devices.cpu)).to(devices.device)
                     
                     # unsqueeze(0)で[77,768] -> [1,77,768]しないとConv2Dのとこで3次元のところが2次元しかないというエラーが出る。
-                    c = cond[0][0].cond.unsqueeze(0)
-                    tc = target_cond[0][0].cond.unsqueeze(0)
 
-                    model_output = shared.sd_model.apply_model(x_noisy, t, c)
-                    target = shared.sd_model.apply_model(x_noisy, t, tc)
+                    # 入力データからembedingを作成
+                    make_temp_embedding(EMBEDDING_NAME,input_tensor.squeeze(0).to(device=devices.device,dtype=torch.float16),cache) #ある番号ごとに保存機能も後で追加か
 
-                    loss_simple = shared.sd_model.get_loss(model_output, target, mean=False).mean([1, 2, 3])
+                    if gr_ptype == "Prompts":
+                        prompt = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step * step_multiplier) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
+                    else:
+                        prompt = prompt_parser.get_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step * step_multiplier) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
+
+
+                    c  = prompt if gr_ptype == "Prompts" else empty_prompt
+                    uc = empty_prompt if gr_ptype == "Prompts" else prompt
                     
-                    logvar_t = shared.sd_model.logvar[t]
-                    loss = loss_simple / torch.exp(logvar_t) + logvar_t
 
-                    loss = shared.sd_model.l_simple_weight * loss.mean()
+                    # seed = random.randrange(4294967294) # 2^32
+                    seed = seed_original
+                        
+                    x = get_kdiffusion_samples(x_start,gr_step,c,uc,7,seed,optimizer,loss_fn,input_tensor)
 
-                    loss_vlb = shared.sd_model.get_loss(model_output, target, mean=False).mean(dim=(1, 2, 3))
-                    loss_lvlb_weights = shared.sd_model.lvlb_weights.to(devices.device)
-                    loss_vlb = (loss_lvlb_weights[t] * loss_vlb).mean()
-                    loss += (shared.sd_model.original_elbo_weight * loss_vlb)
+                    loss = loss_fn(x,xo)
+
+                    # model_output = get_kdiffusion_samples(x_start,gr_step,c,uc,tc,tuc,7,seed,optimizer,loss_fn,input_tensor)
+
+
+                    # model_output = shared.sd_model.apply_model(x_noisy, t, c)
+                    # target = shared.sd_model.apply_model(x_noisy, t, tc)
+
+                    # loss_simple = shared.sd_model.get_loss(model_output, target, mean=False).mean([1, 2, 3])
+                    
+                    # logvar_t = shared.sd_model.logvar[t]
+                    # loss = loss_simple / torch.exp(logvar_t) + logvar_t
+
+                    # loss = shared.sd_model.l_simple_weight * loss.mean()
+
+                    # loss_vlb = shared.sd_model.get_loss(model_output, target, mean=False).mean(dim=(1, 2, 3))
+                    # loss_lvlb_weights = shared.sd_model.lvlb_weights.to(devices.device)
+                    # loss_vlb = (loss_lvlb_weights[t] * loss_vlb).mean()
+                    # loss += (shared.sd_model.original_elbo_weight * loss_vlb)
 
                     loss.backward()  # 勾配を計算
 
-                if i % gr_epoch == 0 or i == learning_step:
+                # if i % gr_epoch == 0 or i == learning_step:
                     print(f"\nIteration {i}, Loss: {loss.item()}")
 
                 return loss
@@ -346,6 +413,9 @@ def gr_func(gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_
                 optimizer.step(closure)
             elif gr_lrmodel == "U-NET":
                 optimizer.step(denoise)
+                # denoise()
+                # i = i + gr_step
+                # optimizer.step(denoise)
             
             
             scheduler.step()
@@ -392,44 +462,6 @@ def gr_interrupt_not_save_train():
     stop_training_save = False
 
 
-def make_temp_embedding(name,vectors,cache):
-    if name in cache:
-        embed = cache[name]
-    else:
-        embed = Embedding(vectors,name)
-        cache[name] = embed
-    embed.vec = vectors
-    embed.step = None
-    shape = vectors.size()
-    embed.vectors = shape[0]
-    embed.shape = shape[-1]
-    embed.cached_checksum = None
-    embed.filename = ''
-    register_embedding(name,embed)
-
-def register_embedding(name,embedding):
-    # /modules/textual_inversion/textual_inversion.py
-    self = modules.sd_hijack.model_hijack.embedding_db
-    model = shared.sd_model
-    try:
-        ids = model.cond_stage_model.tokenize([name])[0]
-        first_id = ids[0]
-    except:
-        return
-    if embedding is None:
-        if self.word_embeddings[name] is None:
-            return
-        del self.word_embeddings[name]
-    else:
-        self.word_embeddings[name] = embedding
-    if first_id not in self.ids_lookup:
-        if embedding is None:
-            return
-        self.ids_lookup[first_id] = []
-    save = [(ids, embedding)] if embedding is not None else []
-    old = [x for x in self.ids_lookup[first_id] if x[1].name!=name]
-    self.ids_lookup[first_id] = sorted(old + save, key=lambda x: len(x[0]), reverse=True)
-    return embedding
 
 merge_dir = None
 def need_save_embed(name,vectors,ow):
@@ -462,5 +494,48 @@ def embedding_merge_dir():
         pass
 
     return merge_dir
+
+def get_kdiffusion_samples(x_start,steps,c,uc,cfg_scale,seed,optimizer,loss_fn,input_tensor):
+    
+    #denoiser
+
+    denoiser = k_diffusion.external.CompVisVDenoiser if shared.sd_model.parameterization == "v" else k_diffusion.external.CompVisDenoiser
+
+    model_wrap = denoiser(shared.sd_model, quantize=shared.opts.enable_quantization)
+
+    model_wrap_cfg = CFGDenoiser(model_wrap).to(devices.device)
+
+    #sigmas
+
+    sigma_min, sigma_max = (0.1, 10) if opts.use_old_karras_scheduler_sigmas else (model_wrap.sigmas[0].item(), model_wrap.sigmas[-1].item())
+
+    sigmas = k_diffusion.sampling.get_sigmas_karras(n=steps, sigma_min=sigma_min, sigma_max=sigma_max)
+
+    # image_conditioning: Dummy zero conditioning if we're not using inpainting or unclip models.
+    image_conditioning = x_start.new_zeros(x_start.shape[0], 5, 1, 1, dtype=x_start.dtype, device=x_start.device)
+
+    #extra params
+
+    noise_sampler = create_noise_sampler(x_start, sigmas, seed)
+    
+    extra_params_kwargs = {
+        'sigmas' : sigmas,
+        'eta' : 1.0,
+        'noise_sampler' : noise_sampler
+    }
+
+    #kdiffusion DPM++ SDE Kerras sampler
+
+    x = sample_dpmpp_sde(model_wrap_cfg, x_start,c=c,uc=uc,cfg_scale=cfg_scale,image_conditioning=image_conditioning, disable=False, callback=None, optimizer=optimizer, loss_fn=loss_fn,  input_tensor=input_tensor, **extra_params_kwargs)
+
+    return x
+
+def create_noise_sampler(x, sigmas, seed):
+    """For DPM++ SDE: manually create noise sampler to enable deterministic results across different batch sizes"""
+    if shared.opts.no_dpmpp_sde_batch_determinism:
+        return None
+
+    sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    return k_diffusion.sampling.BrownianTreeNoiseSampler(x, sigma_min, sigma_max, seed=seed)
 
 script_callbacks.on_ui_tabs(on_ui_tabs)
