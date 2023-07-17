@@ -5,84 +5,7 @@ stable diffusion webui extension
 [日本語解説](#embedding_estimate_日本語)
 
 ## Overview
-The process flow of the emphasis syntax () in webui is as follows: 
-
-1. Separate the token part from the emphasis part in () and input the token part to the encoder of the transformer in the CLIP model 3.
-
-3. get a vector from the obtained hidden_states layer and normalize it
-
-4. multiply it by the numerical value specified in the highlighting syntax for each token
-
-The process is as follows.
-
-So, in order to reproduce the vector values through the highlighting syntax with embedding, we need to
-
-1. prepare the target vector output
-
-2. input the embedding to be adjusted to the encoder
-
-3. calculate the loss value from the output of 2 and the target output and adjust
-
-This method was adopted.
-
-## Parameters
-
-When using this method, enter the following parameters and press "estimate!
-
-### steps
-
-The number of steps to be used in t2i,i2i. The number of steps used in t2i,i2i may be the same as the number of steps you normally use.
-
-### text
-
-Prompt used by t2i,i2i. Syntax should be the same as webui's (need to check if it works with other syntax than emphasized syntax).
-
-### token
-
-The number of tokens to use for embedding.
-
-### late
-
-Learning rate.
-
-### optimizer
-
-Choice of learning adjustment method. Default is Adam.
-
-### loss
-
-Select the loss function. Default is MSELoss.
-
-### learning step
-
-Number of learning steps.
-
-### initial prompt
-
-Additional learning prompt.
-
-The prompt is only converted to embedding (embedding layer) before input to the encoder, so entering the emphasis syntax here will not be emphasized.
-
-option: The number of tokens can be overridden by the number of LAYERS.
-
-If on, the number of tokens actually created for embedding will be the number specified in layers; if off, the number of tokens will be calculated from the text of init_text and saved as the number of tokens.
-
-If the number of tokens exceeds the number of LAYERS, it is rounded down, and if there is a shortage, the shortage is filled with a 0 vector.
-
-The fewer the number of layers, the less learning time is required.
-
-
-### name
-
-The name under which the embedding will be saved. Can be overwritten by turning on the check button next to it.
-
-
-## embedding_estimate_Japanese
-
-stable diffusion webui extension
-
-## Overview
-The process flow of the emphasis syntax () in webui is as follows: 1.
+The process flow of the emphasis syntax () in webui is as follows
 
 Separate the token part from the emphasis part in () and input the token part to the encoder of the transformer in the CLIP model 3.
 
@@ -96,23 +19,27 @@ So, in order to reproduce the vector values through the highlighting syntax with
 
 1. prepare the target vector output
 
-2. input the embedding to be adjusted to the encoder
+2. input the embedding to be adjusted to encoder or U-NET
 
 3. calculate the loss value from the output of 2 and the target output and adjust
 
-This method was adopted.
+This method was adopted. (Incidentally, encoder could not reproduce the value of the emphasis syntax, so if you use emphasis syntax, it is recommended to use U-NET.)
 
 ## Parameters
 
-When using this method, enter the following parameters and press "estimate!
+To use this method, enter the following parameters and press the "estimate!
+
+### prompt type
+
+Decide whether to use Prompt or Negative Prompt.
 
 ### steps
 
-The number of steps to be used in t2i,i2i. The number of steps used in t2i,i2i may be the same as the number of steps you normally use.
+The number of steps to use with t2i and i2i. It may be the same number of steps as you normally use.
 
 ### text
 
-Prompt used by t2i,i2i. Syntax should be the same as webui's (need to check if it works with other syntax than emphasized syntax).
+The prompt to use with t2i,i2i. Syntax should be the same as webui's (need to check if it works with other syntax than emphasized syntax).
 
 ### Training Part
 
@@ -135,6 +62,8 @@ Therefore, we arranged the Textual Inversion method to change the input image in
 
 Since U-NET also has a normalization layer, we expected to be able to learn how to reduce the noise in the textual prompts by embedding the highlighted values (the generated image is likely to have many disturbance factors such as CFG Scale and sampler when directly learning how to reduce the noise).
 
+The webui standard textual inversion used latent diffusion, but this did not give the desired results, perhaps because the noise results were too far apart, so we used the k_diffusion method for de-noising.
+
 ### token
 
 Number of tokens used for embedding.
@@ -155,24 +84,12 @@ Select the loss function. Default is MSELoss.
 
 Number of learning steps.
 
+
 ### initial prompt
 
 Additional learning prompt input field.
 
-The prompt is only converted to embedding (embedding layer) before input to the encoder, and the emphasis syntax is not emphasized by input here.
-
-Optional: Selects the number of tokens used for embedding, either the specified number or the number set in init_text. 
-
-Selects the number of tokens used for embedding, either the specified number or the number set in init_text.
-
-If the number of tokens exceeds the number of layers, it is rounded down.
-
-If the number of layers is small, the learning time is shortened.
-
-### name
-
-Name for saving embedding. You can overwrite the name by turning on the check button next to it.
-
+The prompt is only converted to embedding (embedding layer) before input to the encoder, and the emphasis syntax is not emphasized if you enter it here.
 ## embedding_estimate_日本語
 
 stable diffusion webui 拡張
@@ -192,15 +109,19 @@ webuiにおける強調構文()の処理の流れは
 
 1. 目標のベクトル出力を用意する
 
-2. 調整するためのembeddingをencoderに入力
+2. 調整するためのembeddingをencoderあるいはU-NETに入力
 
 3. 2の出力と目標出力からloss値を算出し調整する
 
-この方法を採用した。
+この方法を採用した。（ちなみにencoderでは強調構文の値は再現できなかったので、強調構文を使用する場合はU-NETの使用が望まれる。）
 
 ## パラメータ
 
 使う際は下記のパラメータを入力してから「estimate！」ボタンを押す。
+
+### prompt type
+
+Promptで使うかNegative Promptで使うか決める。
 
 ### steps
 
@@ -230,6 +151,8 @@ stable diffusion webui の強調構文はtransformer出力に指定した値を�
 そこで、Textual Inversionの手法をアレンジし、TIにおける入力画像をtextプロンプトから生成された画像に変更し、U-NETにおけるtextプロンプトのノイズの引き方を直接学習させる。
 
 U-NETもまた正規化層があるため強調された値も縮小されて結果が出るため、強調構文におけるノイズの引き方をembeddingで学習できると予測した(生成画像はノイズの引き方を直接学習する際にCFG Scale,samplerなど多くの外乱要素を伴うと思われる)。
+
+webui標準のtextual inversionではlatent diffusionを使用していたが、これではノイズ結果がかけ離れていたのか、思った通りの結果にならなかったので、デノイズにはk_diffusionの手法を採用した。
 
 ### token
 
