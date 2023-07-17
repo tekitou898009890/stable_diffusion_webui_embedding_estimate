@@ -117,141 +117,129 @@ class BrownianTreeNoiseSampler:
         t0, t1 = self.transform(torch.as_tensor(sigma)), self.transform(torch.as_tensor(sigma_next))
         return self.tree(t0, t1) / (t1 - t0).abs().sqrt()
 
-def sample_dpmpp_sde(model, x, sigmas, c=None,uc=None,tc=None,tuc=None,cfg_scale=7,extra_args=None,image_conditioning=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, r=1 / 2, optimizer=None, loss_fn=None, input_tensor=None, gr_ptype="Prompt"):
+def sample_dpmpp_sde(model, x, sigmas, c=None,uc=None,cfg_scale=7,extra_args=None,image_conditioning=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, r=1 / 2, optimizer=None, loss_fn=None, input_tensor=None, gr_ptype="Prompt"):
 
-    xo = x
-    EMBEDDING_NAME = 'embedding_estimate'
-    cache = {}
-    uc_cache = [None,None]
+    # xo = x
+    # EMBEDDING_NAME = 'embedding_estimate'
+    # cache = {}
+    # uc_cache = [None,None]
 
 
     # optimizer.zero_grad() 
 
     # for i in trange(len(sigmas) - 1, disable=disable):
-    for i in trange(2, disable=disable):
+    # for i in trange(2, disable=disable):
 
-        sigma_fn = lambda t: t.neg().exp()
-        t_fn = lambda sigma: sigma.log().neg()
-        s_in = x.new_ones([x.shape[0]])
+    sigma_fn = lambda t: t.neg().exp()
+    t_fn = lambda sigma: sigma.log().neg()
+    s_in = x.new_ones([x.shape[0]])
 
-        def sampler(model,x,i,sigmas,denoised,noise_sampler,extra_args):
-            if callback is not None:
-                callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-            if sigmas[i + 1] == 0:
-                # Euler method
-                d = to_d(x, sigmas[i], denoised)
-                dt = sigmas[i + 1] - sigmas[i]
-                x = x + d * dt
-            else:
-                # DPM-Solver++
-                t, t_next = t_fn(sigmas[i]), t_fn(sigmas[i + 1])
-                h = t_next - t
-                s = t + h * r
-                fac = 1 / (2 * r)
+    def sampler(model,x,i,sigmas,denoised,noise_sampler,extra_args):
+        if callback is not None:
+            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
+        if sigmas[i + 1] == 0:
+            # Euler method
+            d = to_d(x, sigmas[i], denoised)
+            dt = sigmas[i + 1] - sigmas[i]
+            x = x + d * dt
+        else:
+            # DPM-Solver++
+            t, t_next = t_fn(sigmas[i]), t_fn(sigmas[i + 1])
+            h = t_next - t
+            s = t + h * r
+            fac = 1 / (2 * r)
 
-                # Step 1
-                sd, su = get_ancestral_step(sigma_fn(t), sigma_fn(s), eta)
-                s_ = t_fn(sd)
-                x_2 = (sigma_fn(s_) / sigma_fn(t)) * x - (t - s_).expm1() * denoised
-                x_2 = x_2 + noise_sampler(sigma_fn(t), sigma_fn(s)) * s_noise * su
-                denoised_2 = model(x_2, sigma_fn(s) * s_in, **extra_args)
+            # Step 1
+            sd, su = get_ancestral_step(sigma_fn(t), sigma_fn(s), eta)
+            s_ = t_fn(sd)
+            x_2 = (sigma_fn(s_) / sigma_fn(t)) * x - (t - s_).expm1() * denoised
+            x_2 = x_2 + noise_sampler(sigma_fn(t), sigma_fn(s)) * s_noise * su
+            denoised_2 = model(x_2, sigma_fn(s) * s_in, **extra_args)
 
-                # Step 2
-                sd, su = get_ancestral_step(sigma_fn(t), sigma_fn(t_next), eta)
-                t_next_ = t_fn(sd)
-                denoised_d = (1 - fac) * denoised + fac * denoised_2
-                x = (sigma_fn(t_next_) / sigma_fn(t)) * x - (t - t_next_).expm1() * denoised_d
-                x = x + noise_sampler(sigma_fn(t), sigma_fn(t_next)) * s_noise * su
-            return x
+            # Step 2
+            sd, su = get_ancestral_step(sigma_fn(t), sigma_fn(t_next), eta)
+            t_next_ = t_fn(sd)
+            denoised_d = (1 - fac) * denoised + fac * denoised_2
+            x = (sigma_fn(t_next_) / sigma_fn(t)) * x - (t - t_next_).expm1() * denoised_d
+            x = x + noise_sampler(sigma_fn(t), sigma_fn(t_next)) * s_noise * su
+        return x
+    
+    # def closure(model,x,xo,sigmas,optimizer,loss_fn,input_tensor,gr_ptype,c,uc,tc,tuc,image_conditioning,cfg_scale,noise_sampler,extra_args):
+
+    """DPM-Solver++ (stochastic)."""
+    sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    noise_sampler = BrownianTreeNoiseSampler(x, sigma_min, sigma_max) if noise_sampler is None else noise_sampler
+    extra_args = {} if extra_args is None else extra_args
+    
+    
+    step_multiplier = 2 # for DPM
+    gr_step = len(sigmas) - 1
+
+        # 勾配を初期化
+
+    # optimizer.zero_grad() 
+
+    # nonlocal uc_cache
+    # nonlocal cache
         
-        def closure(model,x,xo,sigmas,optimizer,loss_fn,input_tensor,gr_ptype,c,uc,tc,tuc,image_conditioning,cfg_scale,noise_sampler,extra_args):
+    # 入力データからembedingを作成
+    # make_temp_embedding(EMBEDDING_NAME,input_tensor.squeeze(0).to(device=devices.device,dtype=torch.float16),cache) #ある番号ごとに保存機能も後で追加か
 
-            """DPM-Solver++ (stochastic)."""
-            sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-            noise_sampler = BrownianTreeNoiseSampler(x, sigma_min, sigma_max) if noise_sampler is None else noise_sampler
-            extra_args = {} if extra_args is None else extra_args
+    # if gr_ptype == "Prompts":
+    #     prompt = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step * step_multiplier) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
+    #     empty_prompt = get_conds_with_caching(prompt_parser.get_learned_conditioning, [''], gr_step * step_multiplier,uc_cache)
+    # else:
+    #     prompt = prompt_parser.get_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step * step_multiplier) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
+    #     empty_prompt = get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, [''], gr_step * step_multiplier,uc_cache)
             
-            
-            step_multiplier = 2 # for DPM
-            gr_step = len(sigmas) - 1
+    
+    output_c  = c
+    output_uc = uc
 
-             # 勾配を初期化
+    # output_c  = prompt if gr_ptype == "Prompts" else empty_prompt
+    # output_uc = empty_prompt if gr_ptype == "Prompts" else prompt
+    # target_c = tc 
+    # target_uc = tuc 
 
-            # optimizer.zero_grad() 
+    extra_args={
+        'cond': output_c, 
+        'image_cond': image_conditioning, 
+        'uncond': output_uc, 
+        'cond_scale': cfg_scale,
+        's_min_uncond': 0
+    }
+    
+    denoised = model(x, sigmas[0] * s_in, **extra_args)
+    
+    x  = sampler(model,x ,0,sigmas,denoised       ,noise_sampler,extra_args)
 
-            # nonlocal uc_cache
-            # nonlocal cache
-                
-            # 入力データからembedingを作成
-            # make_temp_embedding(EMBEDDING_NAME,input_tensor.squeeze(0).to(device=devices.device,dtype=torch.float16),cache) #ある番号ごとに保存機能も後で追加か
+        # output = x
+        # target = xo
+        
+        # loss = shared.sd_model.get_loss(output, target, mean=False).mean([1, 2, 3])
+        # loss = loss_fn(denoised,denoised_target)
 
-            # if gr_ptype == "Prompts":
-            #     prompt = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step * step_multiplier) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
-            #     empty_prompt = get_conds_with_caching(prompt_parser.get_learned_conditioning, [''], gr_step * step_multiplier,uc_cache)
-            # else:
-            #     prompt = prompt_parser.get_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step * step_multiplier) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
-            #     empty_prompt = get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, [''], gr_step * step_multiplier,uc_cache)
-                    
-            
-            output_c  = c
-            output_uc = uc 
-            target_c = tc 
-            target_uc = tuc 
+        # logvar_t = shared.sd_model.logvar[i]
+        # loss = loss / torch.exp(logvar_t) + logvar_t
 
-            # output_c  = prompt if gr_ptype == "Prompts" else empty_prompt
-            # output_uc = empty_prompt if gr_ptype == "Prompts" else prompt
-            # target_c = tc 
-            # target_uc = tuc 
+        # loss = shared.sd_model.l_simple_weight * loss.mean() 
 
-            extra_args={
-                'cond': output_c, 
-                'image_cond': image_conditioning, 
-                'uncond': output_uc, 
-                'cond_scale': cfg_scale,
-                's_min_uncond': 0
-            }
-            
-            target_args = {
-                'cond': target_c, 
-                'image_cond': image_conditioning, 
-                'uncond': target_uc, 
-                'cond_scale': cfg_scale,
-                's_min_uncond': 0
-            }
-            
-            denoised = model(x, sigmas[i] * s_in, **extra_args)
-            denoised_target = model(xo, sigmas[i] * s_in, **target_args)
-            
-            x  = sampler(model,x ,i,sigmas,denoised       ,noise_sampler,extra_args)
-            xo = sampler(model,xo,i,sigmas,denoised_target,noise_sampler,target_args)
+        # loss_vlb = shared.sd_model.get_loss(loss, target, mean=False).mean(dim=(1, 2, 3))
+        # loss_lvlb_weights = shared.sd_model.lvlb_weights.to(devices.device)
+        # loss_vlb = (loss_lvlb_weights[i] * loss_vlb).mean()
+        # loss += (shared.sd_model.original_elbo_weight * loss_vlb)
 
-            output = x
-            target = xo
-            
-            # loss = shared.sd_model.get_loss(output, target, mean=False).mean([1, 2, 3])
-            # loss = loss_fn(denoised,denoised_target)
+        # loss.backward()
 
-            # logvar_t = shared.sd_model.logvar[i]
-            # loss = loss / torch.exp(logvar_t) + logvar_t
-
-            # loss = shared.sd_model.l_simple_weight * loss.mean() 
-
-            # loss_vlb = shared.sd_model.get_loss(loss, target, mean=False).mean(dim=(1, 2, 3))
-            # loss_lvlb_weights = shared.sd_model.lvlb_weights.to(devices.device)
-            # loss_vlb = (loss_lvlb_weights[i] * loss_vlb).mean()
-            # loss += (shared.sd_model.original_elbo_weight * loss_vlb)
-
-            # loss.backward()
-
-            # if i == gr_step - 1:
-            # print(f"\nIteration {i}, Loss: {loss.item()}")
+        # if i == gr_step - 1:
+        # print(f"\nIteration {i}, Loss: {loss.item()}")
 
 
-            return x,xo #loss
-        x,xo = closure(model,x,xo,sigmas,optimizer,loss_fn,input_tensor,gr_ptype,c,uc,tc,tuc,image_conditioning,cfg_scale,noise_sampler,extra_args)
+        #     return x,xo #loss
+        # x,xo = closure(model,x,xo,sigmas,optimizer,loss_fn,input_tensor,gr_ptype,c,uc,image_conditioning,cfg_scale,noise_sampler,extra_args)
         # optimizer.step(lambda:closure(model,x,xo,sigmas,optimizer,loss_fn,input_tensor,gr_ptype,c,uc,tc,tuc,image_conditioning,cfg_scale,noise_sampler,extra_args))
     
     # loss = loss_fn(x,xo)
         
 
-    return x,xo
+    return x
