@@ -315,16 +315,16 @@ def gr_func(gr_ptype,gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr
                         target_cond = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step * step_multiplier)
                         empty_prompt = get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, [''], gr_step * step_multiplier,uc_cache)
                 
-                # 出力
+                    # 出力
 
-                x_original = torch.randn(1,4,64,64).to(devices.device)
+                    x_original = torch.randn(1,4,64,64).to(devices.device)
 
-                seed_original = random.randrange(4294967294) # 2^32
+                    seed_original = random.randrange(4294967294) # 2^32
 
-                tc = target_cond if gr_ptype == "Prompts" else empty_prompt
-                tuc = empty_prompt if gr_ptype == "Prompts" else target_cond
+                    tc = target_cond if gr_ptype == "Prompts" else empty_prompt
+                    tuc = empty_prompt if gr_ptype == "Prompts" else target_cond
 
-                xo = get_kdiffusion_samples(x_original,gr_step,tc,tuc,7,seed_original,optimizer,loss_fn,input_tensor)
+                    xo = get_kdiffusion_samples(x_original,gr_step,tc,tuc,7,seed_original,optimizer,loss_fn,input_tensor)
 
             
             # output = model.get_text_features(input_tensor)
