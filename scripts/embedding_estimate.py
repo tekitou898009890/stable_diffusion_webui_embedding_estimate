@@ -284,16 +284,8 @@ def gr_func(gr_ptype,gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr
         else:
             print("The specified Scheduler does not exist.")
 
-        # 目的出力
-        if gr_lrmodel == "Transformer":
-            target_cond = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step)
-        else:
-            if gr_ptype == "Prompt":
-                target_cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [gr_text], gr_step)
-            else:
-                target_cond = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step)
 
-        EMBEDDING_NAME = 'embedding_estimate'
+        
         cache = {}
         learning_step = int(gr_lstep)
 
@@ -302,17 +294,38 @@ def gr_func(gr_ptype,gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr
 
         uc_cache = [None,None]       
 
-        x_original = torch.randn(1,4,64,64).to(devices.device)
-
-        seed_original = random.randrange(4294967294) # 2^32
 
         # 勾配降下法による最適化ループ
         for i in tqdm.tqdm(range(learning_step)):
-            
-            optimizer.zero_grad()  # 勾配を初期化
+
+            EMBEDDING_NAME = 'embedding_estimate'
+
+            step_multiplier = 2 # for DPM
                 
-            # 入力データからembedingを作成
-            make_temp_embedding(EMBEDDING_NAME,input_tensor.squeeze(0).to(device=devices.device,dtype=torch.float16),cache) #ある番号ごとに保存機能も後で追加か
+            
+            with devices.autocast():
+                # 目的出力
+                if gr_lrmodel == "Transformer":
+                    target_cond = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step * step_multiplier)
+                else:
+                    if gr_ptype == "Prompt":
+                        target_cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [gr_text], gr_step * step_multiplier)
+                        empty_prompt = get_conds_with_caching(prompt_parser.get_learned_conditioning, [''], gr_step * step_multiplier,uc_cache)
+                    else:
+                        target_cond = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step * step_multiplier)
+                        empty_prompt = get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, [''], gr_step * step_multiplier,uc_cache)
+                
+                # 出力
+
+                x_original = torch.randn(1,4,64,64).to(devices.device)
+
+                seed_original = random.randrange(4294967294) # 2^32
+
+                tc = target_cond if gr_ptype == "Prompts" else empty_prompt
+                tuc = empty_prompt if gr_ptype == "Prompts" else target_cond
+
+                xo = get_kdiffusion_samples(x_original,gr_step,tc,tuc,7,seed_original,optimizer,loss_fn,input_tensor)
+
             
             # output = model.get_text_features(input_tensor)
             
@@ -332,12 +345,14 @@ def gr_func(gr_ptype,gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr
             def denoise():
                 #stable-diffusion-webui_1.2.1\repositories\stable-diffusion-stability-ai\ldm\models\diffusion\ddpm.py
 
+                optimizer.zero_grad()  # 勾配を初期化
+
                 with devices.autocast():
                 
                     shared.parallel_processing_allowed = False
 
-                    # x_start = x_original
-                    x_start = torch.randn(1,4,64,64).to(devices.device)
+                    x_start = x_original
+                    # x_start = torch.randn(1,4,64,64).to(devices.device)
                     shared.sd_model.register_schedule()
                     t = torch.randint(0, shared.sd_model.num_timesteps, (x_start.shape[0], ), device=devices.device).long()
                     
@@ -349,28 +364,23 @@ def gr_func(gr_ptype,gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr
                     
                     # unsqueeze(0)で[77,768] -> [1,77,768]しないとConv2Dのとこで3次元のところが2次元しかないというエラーが出る。
 
-                    step_multiplier = 2 # for DPM
-
-                    nonlocal uc_cache
+                    # 入力データからembedingを作成
+                    make_temp_embedding(EMBEDDING_NAME,input_tensor.squeeze(0).to(device=devices.device,dtype=torch.float16),cache) #ある番号ごとに保存機能も後で追加か
 
                     if gr_ptype == "Prompts":
                         prompt = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step * step_multiplier) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
-                        empty_prompt = get_conds_with_caching(prompt_parser.get_learned_conditioning, [''], gr_step * step_multiplier,uc_cache)
                     else:
                         prompt = prompt_parser.get_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step * step_multiplier) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
-                        empty_prompt = get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, [''], gr_step * step_multiplier,uc_cache)
-                    
-                    
+
 
                     c  = prompt if gr_ptype == "Prompts" else empty_prompt
                     uc = empty_prompt if gr_ptype == "Prompts" else prompt
-                    tc = target_cond if gr_ptype == "Prompts" else empty_prompt
-                    tuc = empty_prompt if gr_ptype == "Prompts" else target_cond
+                    
 
-                    seed = random.randrange(4294967294) # 2^32
-                    # seed = seed_original
+                    # seed = random.randrange(4294967294) # 2^32
+                    seed = seed_original
                         
-                    x,xo = get_kdiffusion_samples(x_start,gr_step,c,uc,tc,tuc,7,seed,optimizer,loss_fn,input_tensor)
+                    x = get_kdiffusion_samples(x_start,gr_step,c,uc,7,seed,optimizer,loss_fn,input_tensor)
 
                     loss = loss_fn(x,xo)
 
@@ -485,7 +495,7 @@ def embedding_merge_dir():
 
     return merge_dir
 
-def get_kdiffusion_samples(x_start,steps,c,uc,tc,tuc,cfg_scale,seed,optimizer,loss_fn,input_tensor):
+def get_kdiffusion_samples(x_start,steps,c,uc,cfg_scale,seed,optimizer,loss_fn,input_tensor):
     
     #denoiser
 
@@ -516,9 +526,9 @@ def get_kdiffusion_samples(x_start,steps,c,uc,tc,tuc,cfg_scale,seed,optimizer,lo
 
     #kdiffusion DPM++ SDE Kerras sampler
 
-    x,xo = sample_dpmpp_sde(model_wrap_cfg, x_start,c=c,uc=uc,tc=tc,tuc=tuc,cfg_scale=cfg_scale,image_conditioning=image_conditioning, disable=False, callback=None, optimizer=optimizer, loss_fn=loss_fn,  input_tensor=input_tensor, **extra_params_kwargs)
+    x = sample_dpmpp_sde(model_wrap_cfg, x_start,c=c,uc=uc,cfg_scale=cfg_scale,image_conditioning=image_conditioning, disable=False, callback=None, optimizer=optimizer, loss_fn=loss_fn,  input_tensor=input_tensor, **extra_params_kwargs)
 
-    return x,xo
+    return x
 
 def create_noise_sampler(x, sigmas, seed):
     """For DPM++ SDE: manually create noise sampler to enable deterministic results across different batch sizes"""
