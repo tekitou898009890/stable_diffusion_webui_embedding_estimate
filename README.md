@@ -12,6 +12,15 @@ Create embdding from prompts (emphasis syntax also supported).Negative_TI creati
 
 <br>
 
+#### We could also create this embedding by combining TOKEN.
+
+<img src="https://github.com/tekitou898009890/stable_diffusion_webui_embedding_estimate/assets/124915480/0a53ac00-d9ce-4c71-9762-9c0834b39bf1" width=50%>
+
+
+[https://civitai.com/models/58726](https://civitai.com/models/58726)
+
+<br>
+
 #### Setting example
 
 ![Screenshot 2023-07-19 at 12-37-29 Stable Diffusion](https://github.com/tekitou898009890/stable_diffusion_webui_embedding_estimate/assets/124915480/24e61cee-ff1b-451f-a339-ddbe9dc5f433)
