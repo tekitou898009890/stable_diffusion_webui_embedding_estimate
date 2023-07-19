@@ -2,9 +2,7 @@
 
 stable diffusion webui extension
 
-Create embdding from prompts (emphasis syntax also supported).
-
-Negative_TI creation eliminates the need to prepare images and tags.
+Create embdding from prompts (emphasis syntax also supported).Negative_TI creation eliminates the need to prepare images and tags.
 
 #### The prompts for emphatic syntax can be reproduced to a certain extent.
 
