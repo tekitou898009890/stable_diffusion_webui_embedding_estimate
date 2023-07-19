@@ -7,11 +7,11 @@ stable diffusion webui extension
 ## Overview
 The process flow of the emphasis syntax () in webui is as follows
 
-Separate the token part from the emphasis part in () and input the token part to the encoder of the transformer in the CLIP model 3.
+1. Separate the token part from the emphasis part in () and input the token part to the encoder of the transformer in the CLIP model 3.
 
-3. get a vector from the obtained hidden_states layer and normalize it
+2. get a vector from the obtained hidden_states layer and normalize it
 
-4. multiply it by the numerical value specified in the highlighting syntax for each token
+3. multiply it by the numerical value specified in the highlighting syntax for each token
 
 The process is as follows.
 
