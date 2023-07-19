@@ -5,8 +5,10 @@ stable diffusion webui extension
 ![Screenshot 2023-07-19 at 12-37-29 Stable Diffusion](https://github.com/tekitou898009890/stable_diffusion_webui_embedding_estimate/assets/124915480/24e61cee-ff1b-451f-a339-ddbe9dc5f433)
 
 Setting example
+|(bad quality:1.4)|embedding output|
+|---|---|
+|![00028-778087371](https://github.com/tekitou898009890/stable_diffusion_webui_embedding_estimate/assets/124915480/403d5507-5204-461c-affd-d0fcc33b1861)|![00027-778087371](https://github.com/tekitou898009890/stable_diffusion_webui_embedding_estimate/assets/124915480/fb60c633-f544-427a-aad5-8a74dd1582b5)|
 
-![00027-778087371](https://github.com/tekitou898009890/stable_diffusion_webui_embedding_estimate/assets/124915480/fb60c633-f544-427a-aad5-8a74dd1582b5)![00028-778087371](https://github.com/tekitou898009890/stable_diffusion_webui_embedding_estimate/assets/124915480/403d5507-5204-461c-affd-d0fcc33b1861)
 
 left:(bad quality:1.4) right:output embedding
 
