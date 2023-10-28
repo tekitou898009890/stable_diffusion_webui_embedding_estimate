@@ -8,7 +8,8 @@ Create embdding from prompts (emphasis syntax also supported).Negative_TI creati
 
 |(bad quality:1.4)|embedding output|
 |---|---|
-|![00028-778087371](https://github.com/tekitou898009890/stable_diffusion_webui_embedding_estimate/assets/124915480/403d5507-5204-461c-affd-d0fcc33b1861)|![00027-778087371](https://github.com/tekitou898009890/stable_diffusion_webui_embedding_estimate/assets/124915480/fb60c633-f544-427a-aad5-8a74dd1582b5)|
+|![00033-400898097](https://github.com/tekitou898009890/stable_diffusion_webui_embedding_estimate/assets/124915480/c9e74bff-6ce6-4a80-ba19-9c41e671ae6c)|![00030-400898097](https://github.com/tekitou898009890/stable_diffusion_webui_embedding_estimate/assets/124915480/055cbe9a-a1d5-4427-915f-30d36133382f)|
+
 
 <br>
 
