@@ -117,7 +117,7 @@ class BrownianTreeNoiseSampler:
         t0, t1 = self.transform(torch.as_tensor(sigma)), self.transform(torch.as_tensor(sigma_next))
         return self.tree(t0, t1) / (t1 - t0).abs().sqrt()
 
-def sample_dpmpp_sde(model, x, sigmas, c=None,uc=None,cfg_scale=7,extra_args=None,image_conditioning=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, r=1 / 2, optimizer=None, loss_fn=None, input_tensor=None, gr_ptype="Prompt"):
+def sample_dpmpp_sde(model, x, step, sigmas, c=None,uc=None,cfg_scale=None,extra_args=None,image_conditioning=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, r=1 / 2, optimizer=None, loss_fn=None, input_tensor=None, gr_ptype="Prompt"):
 
     # xo = x
     # EMBEDDING_NAME = 'embedding_estimate'
@@ -209,9 +209,9 @@ def sample_dpmpp_sde(model, x, sigmas, c=None,uc=None,cfg_scale=7,extra_args=Non
         's_min_uncond': 0
     }
     
-    denoised = model(x, sigmas[0] * s_in, **extra_args)
+    denoised = model(x, sigmas[step] * s_in, **extra_args)
     
-    x  = sampler(model,x ,0,sigmas,denoised       ,noise_sampler,extra_args)
+    x  = sampler(model,x ,step,sigmas,denoised       ,noise_sampler,extra_args)
 
         # output = x
         # target = xo
