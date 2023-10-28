@@ -42,6 +42,14 @@ def on_ui_tabs():
                 step=1,
                 value=20,
                 label="Steps"
+            )
+
+            gr_cfg_scale = gr.Slider(
+                minimum=0,
+                maximum=50,
+                step=0.5,
+                value=7,
+                label="cfg_scale"
             ) 
 
             gr_layer = gr.Slider(
@@ -60,6 +68,15 @@ def on_ui_tabs():
                 max_lines=16, 
                 interactive=True, 
                 label='Your prompt'
+            )
+
+        with gr.Row():
+            gr_neg_text = gr.Textbox(
+                value='', 
+                lines=4, 
+                max_lines=16, 
+                interactive=True, 
+                label='Your negative prompt'
             )
 
         with gr.Row():
@@ -171,11 +188,11 @@ def on_ui_tabs():
         )
         
         # gr_button.click(fn=gr_func, inputs=[gr_name,gr_text,gr_optimizer,gr_true], outputs=[gr_html,gr_name,gr_text], show_progress=False)
-        gr_button.click(fn=gr_func, inputs=[gr_ptype,gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_scheduler,gr_lstep,gr_epoch,gr_init,gr_layerow,gr_name,gr_nameow], show_progress=False)
+        gr_button.click(fn=gr_func, inputs=[gr_ptype,gr_text,gr_neg_text,gr_step,gr_cfg_scale,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_scheduler,gr_lstep,gr_epoch,gr_init,gr_layerow,gr_name,gr_nameow], show_progress=False)
 
     return [(ui_component, "Embedding Estimate", "extension_template_tab")]
 
-def gr_func(gr_ptype,gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_scheduler,gr_lstep,gr_epoch,gr_init,gr_layerow,gr_name,gr_nameow):
+def gr_func(gr_ptype,gr_text,gr_neg_text,gr_step,gr_cfg_scale,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr_loss,gr_scheduler,gr_lstep,gr_epoch,gr_init,gr_layerow,gr_name,gr_nameow):
 
     try:
 
@@ -294,6 +311,9 @@ def gr_func(gr_ptype,gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr
 
         uc_cache = [None,None]       
 
+        xo = None
+        seed_original = random.randrange(4294967294) # 2^32
+
 
         # 勾配降下法による最適化ループ
         for i in tqdm.tqdm(range(learning_step)):
@@ -301,30 +321,30 @@ def gr_func(gr_ptype,gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr
             EMBEDDING_NAME = 'embedding_estimate'
 
             step_multiplier = 2 # for DPM
+
+            now_step = i % gr_step
                 
             
             with devices.autocast():
                 # 目的出力
                 if gr_lrmodel == "Transformer":
-                    target_cond = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step * step_multiplier)
+                    target_cond = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text if gr_ptype == "Prompts" else gr_neg_text], gr_step * step_multiplier)
                 else:
-                    if gr_ptype == "Prompt":
-                        target_cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [gr_text], gr_step * step_multiplier)
-                        empty_prompt = get_conds_with_caching(prompt_parser.get_learned_conditioning, [''], gr_step * step_multiplier,uc_cache)
-                    else:
-                        target_cond = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_text], gr_step * step_multiplier)
-                        empty_prompt = get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, [''], gr_step * step_multiplier,uc_cache)
-                
+                        
+                    target_cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [gr_text], gr_step * step_multiplier)
+                    target_uncond = get_conds_with_caching(prompt_parser.get_learned_conditioning, [gr_neg_text], gr_step * step_multiplier,uc_cache)
+
                     # 出力
 
-                    x_original = torch.randn(1,4,64,64).to(devices.device)
+                    # learning_step % gr_step != 1 , xoをx_originalに代入
+                    x_original = torch.randn(1,4,64,64).to(devices.device) if now_step == 0 else xo
 
-                    seed_original = random.randrange(4294967294) # 2^32
+                    # x_original = torch.randn(1,4,64,64).to(devices.device)
 
-                    tc = target_cond if gr_ptype == "Prompts" else empty_prompt
-                    tuc = empty_prompt if gr_ptype == "Prompts" else target_cond
+                    seed_original = random.randrange(4294967294) if now_step == 0 else seed_original # 2^32
 
-                    xo = get_kdiffusion_samples(x_original,gr_step,tc,tuc,7,seed_original,optimizer,loss_fn,input_tensor)
+                    xo = get_kdiffusion_samples(x_original,now_step,gr_step,target_cond,target_uncond,gr_cfg_scale,seed_original,optimizer,loss_fn,input_tensor)
+                    xo = xo.detach()
 
             
             # output = model.get_text_features(input_tensor)
@@ -367,20 +387,17 @@ def gr_func(gr_ptype,gr_text,gr_step,gr_layer,gr_lrmodel,gr_late,gr_optimizer,gr
                     # 入力データからembedingを作成
                     make_temp_embedding(EMBEDDING_NAME,input_tensor.squeeze(0).to(device=devices.device,dtype=torch.float16),cache) #ある番号ごとに保存機能も後で追加か
 
-                    if gr_ptype == "Prompts":
-                        prompt = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step * step_multiplier) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
+                    if gr_ptype == "Prompts":    
+                        c = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step * step_multiplier) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
+                        uc = prompt_parser.get_learned_conditioning(shared.sd_model, [gr_neg_text], gr_step * step_multiplier) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す   
                     else:
-                        prompt = prompt_parser.get_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step * step_multiplier) # 入力テンソルをモデルに通す -> embeding登録してプロンプトから通す
-
-
-                    c  = prompt if gr_ptype == "Prompts" else empty_prompt
-                    uc = empty_prompt if gr_ptype == "Prompts" else prompt
-                    
+                        c = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [gr_text], gr_step * step_multiplier)
+                        uc = prompt_parser.get_learned_conditioning(shared.sd_model, [EMBEDDING_NAME], gr_step * step_multiplier)
 
                     # seed = random.randrange(4294967294) # 2^32
                     seed = seed_original
                         
-                    x = get_kdiffusion_samples(x_start,gr_step,c,uc,7,seed,optimizer,loss_fn,input_tensor)
+                    x = get_kdiffusion_samples(x_start,now_step,gr_step,c,uc,gr_cfg_scale,seed,optimizer,loss_fn,input_tensor)
 
                     loss = loss_fn(x,xo)
 
@@ -495,7 +512,7 @@ def embedding_merge_dir():
 
     return merge_dir
 
-def get_kdiffusion_samples(x_start,steps,c,uc,cfg_scale,seed,optimizer,loss_fn,input_tensor):
+def get_kdiffusion_samples(x_start,step,steps,c,uc,cfg_scale,seed,optimizer,loss_fn,input_tensor):
     
     #denoiser
 
@@ -526,7 +543,7 @@ def get_kdiffusion_samples(x_start,steps,c,uc,cfg_scale,seed,optimizer,loss_fn,i
 
     #kdiffusion DPM++ SDE Kerras sampler
 
-    x = sample_dpmpp_sde(model_wrap_cfg, x_start,c=c,uc=uc,cfg_scale=cfg_scale,image_conditioning=image_conditioning, disable=False, callback=None, optimizer=optimizer, loss_fn=loss_fn,  input_tensor=input_tensor, **extra_params_kwargs)
+    x = sample_dpmpp_sde(model_wrap_cfg, x_start,step,c=c,uc=uc,cfg_scale=cfg_scale,image_conditioning=image_conditioning, disable=False, callback=None, optimizer=optimizer, loss_fn=loss_fn,  input_tensor=input_tensor, **extra_params_kwargs)
 
     return x
 
