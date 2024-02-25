@@ -2,6 +2,8 @@
 
 stable diffusion webui extension
 
+Supported version StableDiffusionWebUI 1.2.1
+
 Create embdding from prompts (emphasis syntax also supported).Negative_TI creation eliminates the need to prepare images and tags.
 
 #### The prompts for emphatic syntax can be reproduced to a certain extent.
